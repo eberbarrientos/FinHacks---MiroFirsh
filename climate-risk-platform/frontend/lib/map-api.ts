@@ -49,10 +49,9 @@ export async function getMapHoldings(
   portfolioId: string,
   scenarioId: string
 ): Promise<MapHoldingsResponse> {
-  const response = await apiClient.get<MapHoldingsResponse>(
+  return apiClient.get<MapHoldingsResponse>(
     `/api/map/holdings?portfolio_id=${portfolioId}&scenario_id=${scenarioId}`
   );
-  return response.data;
 }
 
 /**
@@ -63,8 +62,7 @@ export async function getHotspots(
   scenarioId: string,
   thresholdScore: number = 70.0
 ): Promise<HotspotsResponse> {
-  const response = await apiClient.get<HotspotsResponse>(
+  return apiClient.get<HotspotsResponse>(
     `/api/map/hotspots?portfolio_id=${portfolioId}&scenario_id=${scenarioId}&threshold_score=${thresholdScore}`
   );
-  return response.data;
 }

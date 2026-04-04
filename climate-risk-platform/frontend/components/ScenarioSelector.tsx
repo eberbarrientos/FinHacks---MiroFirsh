@@ -119,7 +119,7 @@ export function ScenarioSelector({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.2 }}
-            className="absolute top-full left-0 mt-2 w-96 bg-slate-800/95 backdrop-blur-md border border-slate-700/50 rounded-2xl shadow-2xl z-50 overflow-hidden"
+            className="absolute top-full left-0 mt-2 w-96 bg-slate-800/95 backdrop-blur-md border border-slate-700/50 rounded-2xl shadow-2xl z-[100] overflow-hidden"
           >
             {loading ? (
               <div className="p-4 text-center text-slate-400">Loading scenarios...</div>
@@ -281,7 +281,7 @@ function CreateScenarioModal({ onClose, onScenarioCreated }: CreateScenarioModal
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
       onClick={onClose}
     >
       <motion.div

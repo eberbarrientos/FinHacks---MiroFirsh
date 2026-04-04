@@ -1,45 +1,39 @@
-"""Database connection and session management"""
+"""Database connection and session management - supports SQLite and PostgreSQL"""
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import Pool
 import logging
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Create database engine with optimized connection pooling
-engine = create_engine(
-    settings.database_url,
-    pool_size=settings.database_pool_size,
-    max_overflow=settings.database_max_overflow,
-    pool_pre_ping=True,  # Enable connection health checks
-    pool_recycle=settings.database_pool_recycle,  # Recycle connections after this many seconds
-    pool_timeout=30,  # Timeout for getting connection from pool
-    echo=False
-)
+is_sqlite = settings.database_url.startswith("sqlite")
 
+engine_kwargs = {
+    "pool_pre_ping": True,
+    "echo": False,
+}
 
-# Add connection pool event listeners for monitoring
-@event.listens_for(Pool, "connect")
-def receive_connect(dbapi_conn, connection_record):
-    """Log when a new database connection is created"""
-    logger.debug("New database connection established")
+if is_sqlite:
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    engine_kwargs.update({
+        "pool_size": settings.database_pool_size,
+        "max_overflow": settings.database_max_overflow,
+        "pool_recycle": settings.database_pool_recycle,
+        "pool_timeout": 30,
+    })
 
+engine = create_engine(settings.database_url, **engine_kwargs)
 
-@event.listens_for(Pool, "checkout")
-def receive_checkout(dbapi_conn, connection_record, connection_proxy):
-    """Log when a connection is checked out from the pool"""
-    logger.debug("Connection checked out from pool")
+# Enable foreign keys for SQLite
+if is_sqlite:
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
-
-@event.listens_for(Pool, "checkin")
-def receive_checkin(dbapi_conn, connection_record):
-    """Log when a connection is returned to the pool"""
-    logger.debug("Connection returned to pool")
-
-
-# Create session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
@@ -52,13 +46,17 @@ def get_db():
         db.close()
 
 
+def init_db():
+    """Create all tables if they don't exist"""
+    from app.models.base import Base
+    # Import all models so they register with Base
+    from app.models import Portfolio, Holding, Scenario, RiskResult, MiroFishRun, Recommendation  # noqa
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables created/verified")
+
+
 def check_database_health() -> bool:
-    """
-    Check if database connection is healthy.
-    
-    Returns:
-        True if database is accessible, False otherwise
-    """
+    """Check if database connection is healthy."""
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))

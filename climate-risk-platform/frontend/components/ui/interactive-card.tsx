@@ -3,11 +3,12 @@
 import { motion } from "framer-motion"
 import { cn } from "@/lib/utils"
 
-interface InteractiveCardProps extends React.HTMLAttributes<HTMLDivElement> {
+interface InteractiveCardProps {
   children: React.ReactNode
   className?: string
   hoverScale?: number
   hoverGlow?: boolean
+  onClick?: () => void
 }
 
 export function InteractiveCard({
@@ -15,7 +16,7 @@ export function InteractiveCard({
   className,
   hoverScale = 1.02,
   hoverGlow = true,
-  ...props
+  onClick,
 }: InteractiveCardProps) {
   return (
     <motion.div
@@ -32,7 +33,7 @@ export function InteractiveCard({
         hoverGlow && "hover:border-slate-600/70 hover:shadow-lg hover:shadow-cyan-500/10",
         className
       )}
-      {...props}
+      {...(onClick ? { onClick } : {})}
     >
       {hoverGlow && (
         <motion.div

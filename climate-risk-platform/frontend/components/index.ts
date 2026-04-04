@@ -33,6 +33,9 @@ export {
   RiskResultsEmptyState 
 } from './EmptyState'
 export { ErrorBoundary } from './ErrorBoundary'
+export { CascadeSimulationPanel } from './CascadeSimulationPanel'
+export { AgentNetworkGraph } from './AgentNetworkGraph'
+export { AgentCascadeTimeline } from './AgentCascadeTimeline'
 
 // Re-export types
 export type { IssuerRiskData } from './IssuerRiskTable'

@@ -50,5 +50,10 @@ class Holding(HoldingCreate):
     portfolio_id: str
     created_at: datetime
 
+    @field_validator("id", "portfolio_id", mode="before")
+    @classmethod
+    def coerce_uuid(cls, v):
+        return str(v)
+
     class Config:
         from_attributes = True

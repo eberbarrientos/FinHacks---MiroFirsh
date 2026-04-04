@@ -38,7 +38,7 @@ export function IssuerRiskTable({ data, className, isLoading = false }: IssuerRi
 
   // Show loading state
   if (isLoading) {
-    return <TableLoader className={className} />
+    return <div className={className}><TableLoader /></div>
   }
 
   // Handle column sorting

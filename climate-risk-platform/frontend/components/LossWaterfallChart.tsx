@@ -38,7 +38,7 @@ interface WaterfallDataPoint {
 export function LossWaterfallChart({ data, className, isLoading = false }: LossWaterfallChartProps) {
   // Show loading state
   if (isLoading) {
-    return <ChartLoader className={className} />
+    return <div className={className}><ChartLoader /></div>
   }
 
   // Transform data into waterfall format

@@ -1,6 +1,6 @@
 """Scenario schemas"""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, Dict, Any
 from datetime import datetime
 
@@ -35,6 +35,11 @@ class Scenario(ScenarioCreate):
     """Schema for scenario with database fields"""
     id: str
     created_at: datetime
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def coerce_id(cls, v):
+        return str(v)
 
     class Config:
         from_attributes = True

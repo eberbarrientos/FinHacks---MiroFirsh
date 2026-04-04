@@ -1,7 +1,8 @@
 """Portfolio schemas"""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from datetime import datetime
+from typing import Any
 
 
 class PortfolioCreate(BaseModel):
@@ -23,6 +24,11 @@ class Portfolio(PortfolioCreate):
     id: str
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def coerce_id(cls, v: Any) -> str:
+        return str(v)
 
     class Config:
         from_attributes = True

@@ -2,18 +2,19 @@
 
 from pydantic_settings import BaseSettings
 from typing import List
+import os
 
 
 class Settings(BaseSettings):
     """Application settings with environment-based configuration"""
     
-    # Database
-    database_url: str = "postgresql://postgres:postgres@localhost:5432/climate_risk"
+    # Database - defaults to SQLite for zero-setup local dev
+    database_url: str = f"sqlite:///{os.path.join(os.path.dirname(os.path.dirname(__file__)), 'climate_risk.db')}"
     database_pool_size: int = 10
     database_max_overflow: int = 20
-    database_pool_recycle: int = 3600  # Recycle connections after 1 hour
+    database_pool_recycle: int = 3600
     
-    # Redis
+    # Redis (optional - works without it)
     redis_url: str = "redis://localhost:6379"
     redis_host: str = "localhost"
     redis_port: int = 6379
