@@ -492,6 +492,56 @@ class SimulationResult:
 # ---------------------------------------------------------------------------
 
 import time as _time
+import asyncio
+from collections import deque
+
+
+class RateLimiter:
+    """
+    Token bucket rate limiter for API calls.
+    
+    Gemini free tier: 15 RPM, so we allow ~1 request per 4 seconds.
+    This prevents hammering the API and getting 429s.
+    """
+    
+    def __init__(self, requests_per_minute: float = 10.0, burst: int = 2):
+        self.rate = requests_per_minute / 60.0  # requests per second
+        self.burst = burst
+        self.tokens = burst
+        self.last_update = _time.time()
+        self._lock = None  # Will be created lazily for thread safety
+    
+    def _refill(self):
+        now = _time.time()
+        elapsed = now - self.last_update
+        self.tokens = min(self.burst, self.tokens + elapsed * self.rate)
+        self.last_update = now
+    
+    def acquire(self, timeout: float = 30.0) -> bool:
+        """
+        Acquire a token, waiting if necessary.
+        Returns True if acquired, False if timeout.
+        """
+        start = _time.time()
+        while True:
+            self._refill()
+            if self.tokens >= 1:
+                self.tokens -= 1
+                return True
+            
+            if _time.time() - start > timeout:
+                return False
+            
+            # Wait for a token to become available
+            wait_time = (1 - self.tokens) / self.rate
+            _time.sleep(min(wait_time, 0.5))  # Check every 0.5s max
+    
+    def wait_time(self) -> float:
+        """Return seconds until next token is available."""
+        self._refill()
+        if self.tokens >= 1:
+            return 0
+        return (1 - self.tokens) / self.rate
 
 
 class LLMClient:
@@ -499,8 +549,12 @@ class LLMClient:
     LLM client with aggressive rate-limit protection.
 
     Gemini free tier: 15 RPM, 1M tokens/min, 1500 RPD.
-    When we get a 429, we stop ALL calls for the retry delay period
-    instead of hammering the API with retries.
+    
+    Strategy:
+    1. Use a token bucket rate limiter to space out requests (~10 RPM to be safe)
+    2. When we get a 429, parse the retry delay and wait that long
+    3. Use exponential backoff with jitter for retries
+    4. Skip LLM calls entirely during cooldown periods
     """
 
     def __init__(self):
@@ -510,6 +564,10 @@ class LLMClient:
         self.available = False
         self._rate_limited_until = 0.0  # timestamp when we can try again
         self._consecutive_429s = 0
+        self._rate_limiter = RateLimiter(requests_per_minute=10.0, burst=2)
+        self._request_queue: deque = deque()
+        self._min_request_interval = 4.0  # seconds between requests
+        self._last_request_time = 0.0
 
         if self.api_key:
             try:
@@ -526,10 +584,10 @@ class LLMClient:
                     api_key=self.api_key,
                     base_url=self.base_url,
                     max_retries=0,  # No automatic retries
-                    timeout=15.0,
+                    timeout=30.0,
                 )
                 self.available = True
-                logger.info(f"LLM client ready: model={self.model}")
+                logger.info(f"LLM client ready: model={self.model}, rate_limit=10 RPM")
             except Exception as e:
                 logger.warning(f"LLM client init failed: {e}")
         else:
@@ -548,9 +606,10 @@ class LLMClient:
         import re
         match = re.search(r'retry in ([\d.]+)s', str(error_msg))
         if match:
-            delay = float(match.group(1))
+            delay = float(match.group(1)) + 5  # Add 5s buffer
         else:
-            delay = min(30 * self._consecutive_429s, 120)  # Exponential backoff, max 2 min
+            # Exponential backoff: 30s, 60s, 90s, max 120s
+            delay = min(30 * self._consecutive_429s, 120)
 
         self._rate_limited_until = _time.time() + delay
         logger.warning(
@@ -558,13 +617,38 @@ class LLMClient:
             f"Cooling down for {delay:.0f}s. All LLM calls will skip until then."
         )
 
+    def _wait_for_rate_limit(self):
+        """Wait for rate limiter before making a request."""
+        # First check if we're in a 429 cooldown
+        if self._is_rate_limited():
+            remaining = self._rate_limited_until - _time.time()
+            logger.debug(f"In 429 cooldown, {remaining:.0f}s remaining")
+            return False
+        
+        # Enforce minimum interval between requests
+        elapsed = _time.time() - self._last_request_time
+        if elapsed < self._min_request_interval:
+            wait = self._min_request_interval - elapsed
+            logger.debug(f"Rate limiting: waiting {wait:.1f}s before next request")
+            _time.sleep(wait)
+        
+        # Use token bucket for additional rate limiting
+        if not self._rate_limiter.acquire(timeout=10.0):
+            logger.warning("Rate limiter timeout, skipping LLM call")
+            return False
+        
+        return True
+
     def chat(self, system_prompt: str, user_prompt: str, temperature: float = 0.7) -> Optional[str]:
         if not self.available:
             return None
-        if self._is_rate_limited():
-            remaining = self._rate_limited_until - _time.time()
-            logger.debug(f"LLM call skipped — rate limited for {remaining:.0f}s more")
+        
+        # Check rate limits before proceeding
+        if not self._wait_for_rate_limit():
             return None
+        
+        self._last_request_time = _time.time()
+        
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -931,11 +1015,12 @@ class CascadeSimulationEngine:
                 candidates.append((agent, deps, damaged_deps))
 
         # If LLM available and round 1, do per-agent reasoning for top candidates
-        # (limit to avoid excessive API calls)
+        # (limit to avoid excessive API calls - MiroFish style batching)
         if self.llm.available and round_num == 1 and candidates:
             # Sort by potential impact (more damaged deps = higher priority)
             candidates.sort(key=lambda x: len(x[2]), reverse=True)
-            llm_limit = min(3, len(candidates))  # Max 3 LLM calls to stay within rate limits
+            # Only do 1-2 LLM calls max per round to stay well within rate limits
+            llm_limit = min(2, len(candidates))
 
             for agent, deps, damaged_deps in candidates[:llm_limit]:
                 # Respect rate limits — skip if we got 429'd
