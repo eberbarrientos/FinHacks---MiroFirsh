@@ -657,7 +657,7 @@ class LLMClient:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=temperature,
-                max_tokens=2000,
+                max_tokens=4000,
             )
             self._consecutive_429s = 0  # Reset on success
             return response.choices[0].message.content
@@ -731,14 +731,14 @@ def _generate_companies_with_llm(
 ) -> List[Dict[str, Any]]:
     """
     Use the LLM to generate companies relevant to an arbitrary event.
-
-    For "What if all kitkats are stolen" the LLM will generate Nestlé,
-    Hershey, Walmart, convenience store chains, cocoa suppliers, etc.
-    Falls back to _lookup_companies if LLM fails.
+    Caps at 15 per LLM call to keep the 3B model reliable.
     """
     llm = get_llm_client()
     if not llm.available:
         return []
+
+    # Cap per-call to keep small models reliable
+    ask_count = min(num_companies, 15)
 
     import json as _json
 
@@ -750,7 +750,7 @@ def _generate_companies_with_llm(
         f"Event: {event_description}\n"
         f"Event type: {event_type}\n"
         f"Regions: {', '.join(affected_regions)}\n\n"
-        f"List {num_companies} real companies most affected by this event. "
+        f"List {ask_count} real companies most affected by this event. "
         f"Include direct victims AND their supply chain / dependency partners. "
         f"For each company return:\n"
         f'{{"name":"<real company name>","sector":"<one of: Energy, Utilities, '
@@ -761,7 +761,7 @@ def _generate_companies_with_llm(
         f'"carbon":<carbon intensity 0-500>,"ins":<insurance dependency 0-100>,'
         f'"sc":<supply chain dependency 0-100>,'
         f'"why":"<one sentence why this company is affected>"}}\n\n'
-        f"Return a JSON array of {num_companies} objects."
+        f"Return a JSON array of {ask_count} objects."
     )
 
     try:
@@ -840,19 +840,80 @@ class CascadeSimulationEngine:
         num_companies: int = 15,
     ) -> List[AgentPersona]:
         """
-        Build agent list by merging:
-        - Portfolio holdings (the user's actual positions)
-        - LLM-generated companies relevant to the specific event (preferred)
-        - Hardcoded registry fallback if LLM unavailable
+        Build agents. num_companies controls the TOTAL agent count.
+
+        Priority:
+        1. LLM-generated companies relevant to the event (primary)
+        2. Portfolio holdings that match affected regions/sectors (secondary)
+        3. Hardcoded registry fallback
         """
         agents: List[AgentPersona] = []
         seen_names: set = set()
+        regions = affected_regions or ["USA"]
 
-        # 1. Portfolio holdings become agents first
+        # --- Step 1: LLM-generated companies (the main actors) ---
+        dynamic_companies: List[Dict[str, Any]] = []
+        if event_description:
+            dynamic_companies = _generate_companies_with_llm(
+                event_description, event_type, regions,
+                num_companies=num_companies,
+            )
+        if not dynamic_companies:
+            dynamic_companies = _lookup_companies(event_type, regions)
+
+        dynamic_companies = dynamic_companies[:num_companies]
+
+        for co in dynamic_companies:
+            if co["name"] in seen_names:
+                continue
+            seen_names.add(co["name"])
+            sector = co.get("sector", "Consumer Staples")
+            deps = SECTOR_DEPENDENCIES.get(sector, ["suppliers", "regulators"])
+            agents.append(AgentPersona(
+                entity_id=f"dyn_{co['name'].lower().replace(' ', '_')[:30]}",
+                name=co["name"],
+                sector=sector,
+                region=co.get("region", co.get("hq", "USA")),
+                market_value=float(co.get("value", 10_000_000)),
+                combined_score=50.0,
+                expected_loss=0.0,
+                dependencies=deps,
+                carbon_intensity=float(co.get("carbon", 100)),
+                insurance_dependency=float(co.get("ins", 50)),
+                supply_chain_dependency=float(co.get("sc", 60)),
+                is_portfolio_holding=False,
+                company_type=co.get("type", ""),
+            ))
+
+        # --- Step 2: Add portfolio holdings that are relevant ---
+        # Only add holdings whose region or sector overlaps with the event
+        norm_regions = {r.lower() for r in regions}
+        affected_sectors = set()
+        for a in agents:
+            affected_sectors.add(a.sector)
+
+        portfolio_added = 0
+        max_portfolio = max(5, num_companies // 2)  # At most half from portfolio
+
         for h in holdings:
             name = h.get("issuer_name", h.get("asset_name", "Unknown"))
             if name in seen_names:
                 continue
+
+            h_region = (h.get("state_region") or h.get("country") or "").lower()
+            h_sector = h.get("sector", "")
+
+            # Include if region matches, sector matches, or it's a global event
+            is_relevant = (
+                "usa" in norm_regions
+                or any(nr in h_region for nr in norm_regions)
+                or h_sector in affected_sectors
+            )
+            if not is_relevant:
+                continue
+            if portfolio_added >= max_portfolio:
+                break
+
             seen_names.add(name)
             sector = h.get("sector", "Unknown")
             deps = SECTOR_DEPENDENCIES.get(sector, ["suppliers", "regulators"])
@@ -871,41 +932,7 @@ class CascadeSimulationEngine:
                 is_portfolio_holding=True,
                 company_type=h.get("asset_type", ""),
             ))
-
-        # 2. Dynamically add disaster-relevant companies
-        #    Try LLM generation first (understands "all kitkats stolen" → Nestlé, Hershey...)
-        #    Fall back to hardcoded registry if LLM fails
-        regions = affected_regions or ["USA"]
-        dynamic_companies = []
-        if event_description:
-            dynamic_companies = _generate_companies_with_llm(
-                event_description, event_type, regions, num_companies=num_companies,
-            )
-        if not dynamic_companies:
-            dynamic_companies = _lookup_companies(event_type, regions)
-            # Trim to requested count
-            dynamic_companies = dynamic_companies[:num_companies]
-        for co in dynamic_companies:
-            if co["name"] in seen_names:
-                continue
-            seen_names.add(co["name"])
-            sector = co["sector"]
-            deps = SECTOR_DEPENDENCIES.get(sector, ["suppliers", "regulators"])
-            agents.append(AgentPersona(
-                entity_id=f"dyn_{co['name'].lower().replace(' ', '_')}",
-                name=co["name"],
-                sector=sector,
-                region=co.get("region", co.get("hq", "USA")),
-                market_value=float(co.get("value", 10_000_000)),
-                combined_score=50.0,
-                expected_loss=0.0,
-                dependencies=deps,
-                carbon_intensity=float(co.get("carbon", 100)),
-                insurance_dependency=float(co.get("ins", 50)),
-                supply_chain_dependency=float(co.get("sc", 60)),
-                is_portfolio_holding=False,
-                company_type=co.get("type", ""),
-            ))
+            portfolio_added += 1
 
         logger.info(
             f"Built {len(agents)} agents: "
@@ -1043,7 +1070,11 @@ class CascadeSimulationEngine:
             sector_impacts = {s: 0.6 for s in llm_affected_sectors}
 
         for agent in agents:
-            if is_policy or is_global:
+            # LLM-generated agents are ALWAYS relevant — the LLM created them
+            # specifically for this event. Portfolio holdings need region matching.
+            if not agent.is_portfolio_holding:
+                region_match = True
+            elif is_policy or is_global:
                 region_match = True
             else:
                 region_match = (
@@ -1054,7 +1085,14 @@ class CascadeSimulationEngine:
             if not region_match:
                 continue
 
-            impact = sector_impacts.get(agent.sector, 0.15 if (is_policy or is_global) else 0.0)
+            impact = sector_impacts.get(agent.sector, 0.0)
+            # For LLM-generated agents with no sector match, give base impact
+            # since the LLM specifically chose them as affected
+            if impact == 0 and not agent.is_portfolio_holding:
+                impact = 0.5
+            # For policy/global events, give portfolio holdings a base impact
+            elif impact == 0 and (is_policy or is_global):
+                impact = 0.15
             if impact == 0:
                 continue
 
