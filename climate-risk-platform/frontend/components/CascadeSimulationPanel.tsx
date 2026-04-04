@@ -425,41 +425,46 @@ export function CascadeSimulationPanel({ portfolioId, className }: Props) {
                     className="space-y-1 max-h-[400px] overflow-y-auto"
                   >
                     {/* Header */}
-                    <div className="flex items-center gap-3 text-xs text-slate-500 py-2 px-2 border-b border-slate-700/30 sticky top-0 bg-slate-800/90 backdrop-blur-sm">
+                    <div className="flex items-center gap-3 text-xs text-slate-500 py-2 px-2 border-b border-slate-700/30 sticky top-0 bg-slate-800/90 backdrop-blur-sm z-10">
+                      <span className="w-5"></span>
                       <span className="flex-1">Entity</span>
                       <span className="w-28">Sector</span>
                       <span className="w-20">Region</span>
-                      <span className="w-24 text-right">Market Value</span>
                       <span className="w-20 text-right">Loss</span>
                       <span className="w-16 text-right">Loss %</span>
                     </div>
-                    {result.affected_entities.map((e, i) => (
-                      <motion.div
-                        key={i}
-                        initial={{ opacity: 0, x: -10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: i * 0.02 }}
-                        className="flex items-center gap-3 text-sm py-2 px-2 rounded-lg hover:bg-slate-700/30 transition-colors cursor-pointer"
-                        onClick={() => {
-                          const agent = agentNodes.find(a => a.id === e.entity)
-                          if (agent) {
-                            setSelectedAgent(agent)
-                            setActiveTab('network')
-                          }
-                        }}
-                      >
-                        <span className="text-slate-200 flex-1 truncate font-medium">{e.entity}</span>
-                        <span className="text-slate-500 text-xs w-28 truncate">{e.sector}</span>
-                        <span className="text-slate-500 text-xs w-20 truncate">{e.region}</span>
-                        <span className="text-slate-400 font-mono text-xs w-24 text-right">{fmt(e.market_value)}</span>
-                        <span className="text-red-400 font-mono text-xs w-20 text-right">{fmt(e.total_loss)}</span>
-                        <span className={`text-xs w-16 text-right font-medium ${
-                          e.loss_pct > 10 ? 'text-red-400' : e.loss_pct > 5 ? 'text-amber-400' : 'text-emerald-400'
-                        }`}>
-                          {e.loss_pct.toFixed(1)}%
-                        </span>
-                      </motion.div>
-                    ))}
+                    {result.affected_entities.map((e, i) => {
+                      const isDynamic = !(e as any).is_portfolio_holding
+                      return (
+                        <motion.div
+                          key={i}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: Math.min(i * 0.02, 0.5) }}
+                          className={`flex items-center gap-3 text-sm py-2 px-2 rounded-lg hover:bg-slate-700/30 transition-colors cursor-pointer ${isDynamic ? 'border-l-2 border-cyan-500/40' : ''}`}
+                          onClick={() => {
+                            const agent = agentNodes.find(a => a.id === e.entity)
+                            if (agent) {
+                              setSelectedAgent(agent)
+                              setActiveTab('network')
+                            }
+                          }}
+                        >
+                          <span className="w-5 text-[10px]" title={isDynamic ? 'LLM-generated company' : 'Portfolio holding'}>
+                            {isDynamic ? '🤖' : '📊'}
+                          </span>
+                          <span className="text-slate-200 flex-1 truncate font-medium">{e.entity}</span>
+                          <span className="text-slate-500 text-xs w-28 truncate">{e.sector}</span>
+                          <span className="text-slate-500 text-xs w-20 truncate">{e.region}</span>
+                          <span className="text-red-400 font-mono text-xs w-20 text-right">{fmt(e.total_loss)}</span>
+                          <span className={`text-xs w-16 text-right font-medium ${
+                            e.loss_pct > 10 ? 'text-red-400' : e.loss_pct > 5 ? 'text-amber-400' : 'text-emerald-400'
+                          }`}>
+                            {e.loss_pct.toFixed(1)}%
+                          </span>
+                        </motion.div>
+                      )
+                    })}
                   </motion.div>
                 )}
 
