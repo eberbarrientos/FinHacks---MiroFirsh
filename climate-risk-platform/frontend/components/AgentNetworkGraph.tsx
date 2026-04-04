@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect, useRef, useState, useMemo } from 'react'
+import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 
 export interface AgentNode {
@@ -41,6 +41,14 @@ const SECTOR_COLORS: Record<string, string> = {
   'Communication Services': '#6366f1',
 }
 
+const EDGE_LABELS: Record<string, string> = {
+  supply_chain_disruption: 'supply chain',
+  insurance_cascade: 'insurance',
+  grid_failure_cascade: 'grid failure',
+  direct_impact: 'direct',
+  operational_disruption: 'operations',
+}
+
 const fmt = (n: number) => {
   if (n >= 1e9) return `$${(n / 1e9).toFixed(1)}B`
   if (n >= 1e6) return `$${(n / 1e6).toFixed(1)}M`
@@ -48,18 +56,32 @@ const fmt = (n: number) => {
   return `$${n.toFixed(0)}`
 }
 
+// Simple physics node for the force simulation
+interface PhysicsNode {
+  id: string
+  x: number
+  y: number
+  vx: number
+  vy: number
+  sector: string
+}
+
 export function AgentNetworkGraph({ agents, edges, onAgentSelect, className = '' }: Props) {
-  const svgRef = useRef<SVGSVGElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [selected, setSelected] = useState<AgentNode | null>(null)
   const [hovered, setHovered] = useState<string | null>(null)
-  const [dims, setDims] = useState({ w: 800, h: 560 })
+  const [dims, setDims] = useState({ w: 900, h: 580 })
+  const nodesRef = useRef<Map<string, PhysicsNode>>(new Map())
+  const animRef = useRef<number>(0)
+  const frameRef = useRef(0)
 
+  // Resize
   useEffect(() => {
     const update = () => {
       if (containerRef.current) {
         const r = containerRef.current.getBoundingClientRect()
-        setDims({ w: r.width || 800, h: 560 })
+        setDims({ w: r.width || 900, h: 580 })
       }
     }
     update()
@@ -67,64 +89,337 @@ export function AgentNetworkGraph({ agents, edges, onAgentSelect, className = ''
     return () => window.removeEventListener('resize', update)
   }, [])
 
-  // Layout: group by sector, spread in a grid-like arrangement
-  const positions = useMemo(() => {
-    const map = new Map<string, { x: number; y: number }>()
-    if (!agents.length) return map
-
-    // Group by sector
+  // Sector clusters: compute center positions for each sector
+  const sectorCenters = useMemo(() => {
+    const centers = new Map<string, { x: number; y: number }>()
     const bySector = new Map<string, AgentNode[]>()
     agents.forEach(a => {
       if (!bySector.has(a.sector)) bySector.set(a.sector, [])
       bySector.get(a.sector)!.push(a)
     })
-
     const sectorList = Array.from(bySector.keys())
     const cols = Math.ceil(Math.sqrt(sectorList.length))
-    const rows = Math.ceil(sectorList.length / cols)
     const cellW = dims.w / (cols + 0.5)
-    const cellH = dims.h / (rows + 0.5)
-    const pad = 30
-
-    sectorList.forEach((sector, si) => {
-      const col = si % cols
-      const row = Math.floor(si / cols)
-      const cx = cellW * (col + 0.75)
-      const cy = cellH * (row + 0.75)
-      const group = bySector.get(sector)!
-      // Arrange agents in a small circle within the cell
-      const r = Math.min(cellW, cellH) * 0.3
-      group.forEach((agent, ai) => {
-        const angle = (2 * Math.PI * ai) / group.length - Math.PI / 2
-        const spread = group.length === 1 ? 0 : r
-        map.set(agent.id, {
-          x: cx + spread * Math.cos(angle),
-          y: cy + spread * Math.sin(angle),
-        })
+    const cellH = dims.h / (Math.ceil(sectorList.length / cols) + 0.5)
+    sectorList.forEach((sector, i) => {
+      centers.set(sector, {
+        x: cellW * ((i % cols) + 0.75),
+        y: cellH * (Math.floor(i / cols) + 0.75),
       })
     })
-    return map
+    return centers
   }, [agents, dims])
 
-  // Which edges to highlight
-  const highlightSet = useMemo(() => {
+  // Connected nodes for the selected agent
+  const connectedSet = useMemo(() => {
     const s = new Set<string>()
-    if (!hovered && !selected) return s
     const focusId = hovered || selected?.id
+    if (!focusId) return s
+    s.add(focusId)
     edges.forEach(e => {
-      if (e.source === focusId || e.target === focusId) {
-        s.add(e.source)
-        s.add(e.target)
-      }
+      if (e.source === focusId) s.add(e.target)
+      if (e.target === focusId) s.add(e.source)
     })
     return s
   }, [hovered, selected, edges])
 
-  const handleClick = (a: AgentNode) => {
-    const next = selected?.id === a.id ? null : a
+  // Initialize physics nodes when agents change
+  useEffect(() => {
+    const map = new Map<string, PhysicsNode>()
+    agents.forEach(a => {
+      const center = sectorCenters.get(a.sector) || { x: dims.w / 2, y: dims.h / 2 }
+      // Start near sector center with some jitter
+      const existing = nodesRef.current.get(a.id)
+      map.set(a.id, {
+        id: a.id,
+        x: existing?.x ?? center.x + (Math.random() - 0.5) * 80,
+        y: existing?.y ?? center.y + (Math.random() - 0.5) * 80,
+        vx: (Math.random() - 0.5) * 0.3,
+        vy: (Math.random() - 0.5) * 0.3,
+        sector: a.sector,
+      })
+    })
+    nodesRef.current = map
+  }, [agents, sectorCenters, dims])
+
+  // Agent lookup
+  const agentMap = useMemo(() => {
+    const m = new Map<string, AgentNode>()
+    agents.forEach(a => m.set(a.id, a))
+    return m
+  }, [agents])
+
+  // Canvas animation loop
+  useEffect(() => {
+    if (!agents.length) return
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const dpr = window.devicePixelRatio || 1
+    canvas.width = dims.w * dpr
+    canvas.height = dims.h * dpr
+    ctx.scale(dpr, dpr)
+
+    const focusId = hovered || selected?.id
+
+    const tick = () => {
+      frameRef.current++
+      const nodes = nodesRef.current
+      const t = frameRef.current * 0.02
+
+      // Physics: gentle forces
+      nodes.forEach((node) => {
+        const center = sectorCenters.get(node.sector) || { x: dims.w / 2, y: dims.h / 2 }
+        // Pull toward sector center
+        node.vx += (center.x - node.x) * 0.003
+        node.vy += (center.y - node.y) * 0.003
+        // Gentle breathing motion
+        node.vx += Math.sin(t + node.x * 0.01) * 0.02
+        node.vy += Math.cos(t + node.y * 0.01) * 0.02
+      })
+
+      // Repulsion between nearby nodes
+      const nodeArr = Array.from(nodes.values())
+      for (let i = 0; i < nodeArr.length; i++) {
+        for (let j = i + 1; j < nodeArr.length; j++) {
+          const a = nodeArr[i], b = nodeArr[j]
+          const dx = b.x - a.x, dy = b.y - a.y
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1
+          if (dist < 60) {
+            const force = (60 - dist) * 0.01
+            const fx = (dx / dist) * force, fy = (dy / dist) * force
+            a.vx -= fx; a.vy -= fy
+            b.vx += fx; b.vy += fy
+          }
+        }
+      }
+
+      // Edge attraction (gentle)
+      edges.forEach(e => {
+        const sn = nodes.get(e.source), tn = nodes.get(e.target)
+        if (!sn || !tn) return
+        const dx = tn.x - sn.x, dy = tn.y - sn.y
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1
+        if (dist > 120) {
+          const f = (dist - 120) * 0.0005
+          sn.vx += (dx / dist) * f
+          sn.vy += (dy / dist) * f
+          tn.vx -= (dx / dist) * f
+          tn.vy -= (dy / dist) * f
+        }
+      })
+
+      // Update positions with damping
+      nodes.forEach(node => {
+        node.vx *= 0.92
+        node.vy *= 0.92
+        node.x += node.vx
+        node.y += node.vy
+        // Boundary
+        node.x = Math.max(30, Math.min(dims.w - 30, node.x))
+        node.y = Math.max(30, Math.min(dims.h - 30, node.y))
+      })
+
+      // --- DRAW ---
+      ctx.clearRect(0, 0, dims.w, dims.h)
+
+      // Background
+      const grad = ctx.createRadialGradient(dims.w / 2, dims.h / 2, 0, dims.w / 2, dims.h / 2, dims.w * 0.6)
+      grad.addColorStop(0, '#0f172a')
+      grad.addColorStop(1, '#020617')
+      ctx.fillStyle = grad
+      ctx.fillRect(0, 0, dims.w, dims.h)
+
+      // Sector cluster labels
+      sectorCenters.forEach((center, sector) => {
+        ctx.fillStyle = 'rgba(148,163,184,0.15)'
+        ctx.font = '600 13px system-ui'
+        ctx.textAlign = 'center'
+        ctx.fillText(sector, center.x, center.y - 55)
+      })
+
+      // Edges
+      edges.forEach(e => {
+        const sn = nodes.get(e.source), tn = nodes.get(e.target)
+        if (!sn || !tn) return
+
+        const isConnected = focusId && (connectedSet.has(e.source) && connectedSet.has(e.target))
+        const isFocusEdge = focusId && (e.source === focusId || e.target === focusId)
+
+        // When focused, hide unrelated edges
+        if (focusId && !isConnected) return
+
+        ctx.beginPath()
+        ctx.moveTo(sn.x, sn.y)
+        ctx.lineTo(tn.x, tn.y)
+
+        if (isFocusEdge) {
+          ctx.strokeStyle = 'rgba(6,182,212,0.5)'
+          ctx.lineWidth = 2
+          ctx.setLineDash([])
+        } else if (isConnected) {
+          ctx.strokeStyle = 'rgba(6,182,212,0.25)'
+          ctx.lineWidth = 1
+          ctx.setLineDash([])
+        } else {
+          ctx.strokeStyle = 'rgba(71,85,105,0.08)'
+          ctx.lineWidth = 0.5
+          ctx.setLineDash([2, 4])
+        }
+        ctx.stroke()
+        ctx.setLineDash([])
+
+        // Edge label — only on focused edges
+        if (isFocusEdge) {
+          const mx = (sn.x + tn.x) / 2, my = (sn.y + tn.y) / 2
+          const label = EDGE_LABELS[e.type] || e.type.replace(/_/g, ' ')
+          ctx.fillStyle = 'rgba(6,182,212,0.7)'
+          ctx.font = '500 9px system-ui'
+          ctx.textAlign = 'center'
+          ctx.fillText(label, mx, my - 4)
+          ctx.fillStyle = 'rgba(248,113,113,0.7)'
+          ctx.fillText(fmt(e.loss), mx, my + 8)
+        }
+      })
+
+      // Animated flow particles on focused edges
+      if (focusId) {
+        edges.forEach(e => {
+          if (e.source !== focusId && e.target !== focusId) return
+          const sn = nodes.get(e.source), tn = nodes.get(e.target)
+          if (!sn || !tn) return
+          const progress = ((frameRef.current * 2 + e.loss * 0.0001) % 100) / 100
+          const px = sn.x + (tn.x - sn.x) * progress
+          const py = sn.y + (tn.y - sn.y) * progress
+          ctx.beginPath()
+          ctx.arc(px, py, 2.5, 0, Math.PI * 2)
+          ctx.fillStyle = 'rgba(6,182,212,0.8)'
+          ctx.fill()
+        })
+      }
+
+      // Nodes
+      agents.forEach(agent => {
+        const node = nodes.get(agent.id)
+        if (!node) return
+
+        const isSel = selected?.id === agent.id
+        const isHov = hovered === agent.id
+        const isConn = connectedSet.has(agent.id)
+        const dimmed = focusId && !isConn && !isSel && !isHov
+        const color = SECTOR_COLORS[agent.sector] || '#64748b'
+        const baseR = Math.max(6, Math.min(18, 6 + agent.lossPct * 0.8))
+        const r = isSel ? baseR + 4 : isHov ? baseR + 2 : baseR
+        // Gentle pulse for directly affected
+        const pulse = agent.isDirectlyAffected ? 1 + Math.sin(t * 2) * 0.08 : 1
+        const drawR = r * pulse
+
+        ctx.globalAlpha = dimmed ? 0.12 : 1
+
+        // Glow for selected
+        if (isSel) {
+          ctx.beginPath()
+          ctx.arc(node.x, node.y, drawR + 8, 0, Math.PI * 2)
+          ctx.fillStyle = color.replace(')', ',0.15)').replace('rgb', 'rgba')
+          ctx.fill()
+        }
+
+        // Portfolio ring
+        if (agent.isPortfolioHolding !== false) {
+          ctx.beginPath()
+          ctx.arc(node.x, node.y, drawR + 3, 0, Math.PI * 2)
+          ctx.strokeStyle = color
+          ctx.lineWidth = 1.5
+          ctx.setLineDash([3, 3])
+          ctx.stroke()
+          ctx.setLineDash([])
+        }
+
+        // Main circle
+        ctx.beginPath()
+        ctx.arc(node.x, node.y, drawR, 0, Math.PI * 2)
+        ctx.fillStyle = color
+        ctx.globalAlpha = dimmed ? 0.12 : agent.isDirectlyAffected ? 0.9 : 0.6
+        ctx.fill()
+
+        // Border
+        ctx.globalAlpha = dimmed ? 0.12 : 1
+        ctx.strokeStyle = isSel ? '#06b6d4' : isHov ? '#e2e8f0' : 'rgba(0,0,0,0.2)'
+        ctx.lineWidth = isSel ? 2.5 : isHov ? 1.5 : 0.5
+        ctx.stroke()
+
+        // Label
+        const showLabel = isSel || isHov || (isConn && focusId) || (!focusId && baseR > 12)
+        if (showLabel) {
+          ctx.fillStyle = dimmed ? 'rgba(226,232,240,0.2)' : '#e2e8f0'
+          ctx.font = isSel ? '600 11px system-ui' : '400 9px system-ui'
+          ctx.textAlign = 'center'
+          const name = agent.name.length > 20 ? agent.name.slice(0, 18) + '…' : agent.name
+          ctx.fillText(name, node.x, node.y - drawR - 5)
+
+          // Show loss on hover/select
+          if (isSel || isHov) {
+            ctx.fillStyle = 'rgba(248,113,113,0.9)'
+            ctx.font = '600 10px system-ui'
+            ctx.fillText(fmt(agent.loss), node.x, node.y + drawR + 12)
+          }
+        }
+
+        ctx.globalAlpha = 1
+      })
+
+      // Legend overlay
+      ctx.fillStyle = 'rgba(2,6,23,0.75)'
+      ctx.fillRect(8, dims.h - 32, 280, 26)
+      ctx.fillStyle = 'rgba(148,163,184,0.6)'
+      ctx.font = '400 9px system-ui'
+      ctx.textAlign = 'left'
+      ctx.fillText('⬤ = company agent  ◌ = portfolio holding  size = loss %  click to expand', 14, dims.h - 16)
+
+      animRef.current = requestAnimationFrame(tick)
+    }
+
+    animRef.current = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(animRef.current)
+  }, [agents, edges, dims, selected, hovered, sectorCenters, connectedSet])
+
+  // Hit testing for mouse events
+  const getNodeAt = useCallback((mx: number, my: number): AgentNode | null => {
+    const nodes = nodesRef.current
+    let closest: AgentNode | null = null
+    let closestDist = 20 // max click distance
+    agents.forEach(agent => {
+      const node = nodes.get(agent.id)
+      if (!node) return
+      const dx = node.x - mx, dy = node.y - my
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      const r = Math.max(6, Math.min(18, 6 + agent.lossPct * 0.8))
+      if (dist < r + 5 && dist < closestDist) {
+        closestDist = dist
+        closest = agent
+      }
+    })
+    return closest
+  }, [agents])
+
+  const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const agent = getNodeAt(e.clientX - rect.left, e.clientY - rect.top)
+    const next = agent && selected?.id === agent.id ? null : agent
     setSelected(next)
     onAgentSelect?.(next)
-  }
+  }, [getNodeAt, selected, onAgentSelect])
+
+  const handleMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const agent = getNodeAt(e.clientX - rect.left, e.clientY - rect.top)
+    setHovered(agent?.id || null)
+    if (canvasRef.current) canvasRef.current.style.cursor = agent ? 'pointer' : 'default'
+  }, [getNodeAt])
 
   if (!agents.length) {
     return (
@@ -137,8 +432,17 @@ export function AgentNetworkGraph({ agents, edges, onAgentSelect, className = ''
     )
   }
 
-  const focusId = hovered || selected?.id
-  const hasFocus = !!focusId
+  // Build dependency detail for selected agent
+  const selectedDeps = useMemo(() => {
+    if (!selected) return { incoming: [] as { name: string; type: string; loss: number }[], outgoing: [] as { name: string; type: string; loss: number }[] }
+    const incoming = edges.filter(e => e.target === selected.id).map(e => ({
+      name: e.source, type: e.type, loss: e.loss,
+    }))
+    const outgoing = edges.filter(e => e.source === selected.id).map(e => ({
+      name: e.target, type: e.type, loss: e.loss,
+    }))
+    return { incoming, outgoing }
+  }, [selected, edges])
 
   return (
     <div className={`rounded-2xl bg-slate-900/50 border border-slate-700/50 overflow-hidden ${className}`}>
@@ -146,13 +450,10 @@ export function AgentNetworkGraph({ agents, edges, onAgentSelect, className = ''
       <div className="px-4 py-3 border-b border-slate-700/50 flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm">
           <span className="text-white font-semibold">🔗 Agent Network</span>
-          <span className="text-slate-500">
-            {agents.length} agents · {edges.length} links
-          </span>
+          <span className="text-slate-500">{agents.length} agents · {edges.length} cascade links</span>
         </div>
-        {/* Sector legend - compact */}
         <div className="flex items-center gap-2 flex-wrap justify-end">
-          {Array.from(new Set(agents.map(a => a.sector))).slice(0, 6).map(s => (
+          {Array.from(new Set(agents.map(a => a.sector))).slice(0, 7).map(s => (
             <div key={s} className="flex items-center gap-1">
               <div className="w-2 h-2 rounded-full" style={{ background: SECTOR_COLORS[s] || '#64748b' }} />
               <span className="text-[10px] text-slate-500">{s}</span>
@@ -161,120 +462,18 @@ export function AgentNetworkGraph({ agents, edges, onAgentSelect, className = ''
         </div>
       </div>
 
-      {/* SVG Graph */}
+      {/* Canvas */}
       <div ref={containerRef} className="relative" style={{ height: dims.h }}>
-        <svg
-          ref={svgRef}
-          width={dims.w}
-          height={dims.h}
-          className="w-full"
-          style={{ background: 'radial-gradient(ellipse at center, #0f172a 0%, #020617 100%)' }}
-        >
-          {/* Subtle grid */}
-          <defs>
-            <pattern id="agrid" width="50" height="50" patternUnits="userSpaceOnUse">
-              <path d="M 50 0 L 0 0 0 50" fill="none" stroke="rgba(51,65,85,0.15)" strokeWidth="0.5" />
-            </pattern>
-          </defs>
-          <rect width="100%" height="100%" fill="url(#agrid)" />
-
-          {/* Edges - only show relevant ones when focused */}
-          {edges.map((edge, i) => {
-            const sp = positions.get(edge.source)
-            const tp = positions.get(edge.target)
-            if (!sp || !tp) return null
-
-            const isLit = highlightSet.has(edge.source) && highlightSet.has(edge.target)
-            // When something is focused, dim unrelated edges heavily
-            if (hasFocus && !isLit) return null
-
-            return (
-              <line
-                key={i}
-                x1={sp.x} y1={sp.y} x2={tp.x} y2={tp.y}
-                stroke={isLit ? 'rgba(6,182,212,0.5)' : 'rgba(71,85,105,0.12)'}
-                strokeWidth={isLit ? 1.5 : 0.5}
-                strokeDasharray={edge.round > 1 ? '3,3' : undefined}
-              />
-            )
-          })}
-
-          {/* Nodes */}
-          {agents.map(agent => {
-            const pos = positions.get(agent.id)
-            if (!pos) return null
-
-            const isSel = selected?.id === agent.id
-            const isHov = hovered === agent.id
-            const isLit = highlightSet.has(agent.id)
-            const dimmed = hasFocus && !isLit && !isSel && !isHov
-            const color = SECTOR_COLORS[agent.sector] || '#64748b'
-            // Size by loss magnitude (min 5, max 16)
-            const baseR = Math.max(5, Math.min(16, 5 + (agent.lossPct / 2)))
-            const r = isSel || isHov ? baseR + 3 : baseR
-            const isPortfolio = agent.isPortfolioHolding !== false
-
-            return (
-              <g
-                key={agent.id}
-                style={{ cursor: 'pointer', opacity: dimmed ? 0.2 : 1, transition: 'opacity 0.2s' }}
-                onClick={() => handleClick(agent)}
-                onMouseEnter={() => setHovered(agent.id)}
-                onMouseLeave={() => setHovered(null)}
-              >
-                {/* Outer ring for portfolio holdings */}
-                {isPortfolio && (
-                  <circle cx={pos.x} cy={pos.y} r={r + 3}
-                    fill="none" stroke={color} strokeWidth={1.5}
-                    strokeDasharray="2,2" opacity={0.5}
-                  />
-                )}
-                {/* Main circle */}
-                <circle cx={pos.x} cy={pos.y} r={r}
-                  fill={color}
-                  fillOpacity={agent.isDirectlyAffected ? 0.9 : 0.55}
-                  stroke={isSel ? '#06b6d4' : isHov ? '#e2e8f0' : 'rgba(0,0,0,0.3)'}
-                  strokeWidth={isSel ? 2.5 : isHov ? 1.5 : 0.5}
-                />
-                {/* Label - show on hover/select, or always for large nodes */}
-                {(isSel || isHov || (isLit && hasFocus) || (!hasFocus && baseR > 10)) && (
-                  <text
-                    x={pos.x} y={pos.y - r - 5}
-                    textAnchor="middle"
-                    fill="#e2e8f0"
-                    fontSize={isSel || isHov ? 11 : 9}
-                    fontWeight={isSel ? 600 : 400}
-                  >
-                    {agent.name.length > 22 ? agent.name.slice(0, 20) + '…' : agent.name}
-                  </text>
-                )}
-              </g>
-            )
-          })}
-        </svg>
-
-        {/* Bottom-left: shape legend */}
-        <div className="absolute bottom-3 left-3 flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-950/80 border border-slate-800/60 text-[10px] text-slate-400">
-          <div className="flex items-center gap-1">
-            <svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#3b82f6" opacity="0.7" stroke="#3b82f6" strokeWidth="1.5" strokeDasharray="2,2" /></svg>
-            Portfolio
-          </div>
-          <div className="flex items-center gap-1">
-            <svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="#3b82f6" opacity="0.5" /></svg>
-            Dependency
-          </div>
-          <div className="flex items-center gap-1">
-            <svg width="14" height="14"><circle cx="7" cy="7" r="7" fill="#ef4444" opacity="0.8" /></svg>
-            High loss
-          </div>
-          <div className="flex items-center gap-1">
-            <svg width="14" height="14"><circle cx="7" cy="7" r="4" fill="#22c55e" opacity="0.5" /></svg>
-            Low loss
-          </div>
-        </div>
+        <canvas
+          ref={canvasRef}
+          style={{ width: dims.w, height: dims.h }}
+          onClick={handleClick}
+          onMouseMove={handleMove}
+          onMouseLeave={() => setHovered(null)}
+        />
       </div>
 
-      {/* Detail panel */}
+      {/* Expanded detail panel when a node is selected */}
       <AnimatePresence>
         {selected && (
           <motion.div
@@ -283,29 +482,66 @@ export function AgentNetworkGraph({ agents, edges, onAgentSelect, className = ''
             exit={{ opacity: 0, height: 0 }}
             className="border-t border-slate-700/50 bg-slate-800/40 px-4 py-3"
           >
-            <div className="flex items-center justify-between mb-2">
+            {/* Stats row */}
+            <div className="flex items-center justify-between mb-3">
               <div>
                 <span className="text-white font-medium text-sm">{selected.name}</span>
                 <span className="text-slate-500 text-xs ml-2">
                   {selected.sector} · {selected.region}
-                  {selected.isPortfolioHolding !== false ? ' · Portfolio' : ' · Dependency chain'}
+                  {selected.isPortfolioHolding !== false ? ' · Portfolio' : ' · Dependency'}
                 </span>
               </div>
               <button onClick={() => { setSelected(null); onAgentSelect?.(null) }}
-                className="text-slate-500 hover:text-white text-xs">✕</button>
+                className="text-slate-500 hover:text-white text-xs px-2 py-1 rounded hover:bg-slate-700/50">✕</button>
             </div>
-            <div className="grid grid-cols-4 gap-3">
+            <div className="grid grid-cols-4 gap-3 mb-3">
               {[
-                { label: 'Market Value', value: fmt(selected.marketValue), color: 'text-white' },
-                { label: 'Total Loss', value: fmt(selected.loss), color: 'text-red-400' },
+                { label: 'Market Value', value: `$${fmt(selected.marketValue)}`, color: 'text-white' },
+                { label: 'Total Loss', value: `$${fmt(selected.loss)}`, color: 'text-red-400' },
                 { label: 'Loss %', value: `${selected.lossPct.toFixed(1)}%`, color: selected.lossPct > 10 ? 'text-red-400' : selected.lossPct > 5 ? 'text-amber-400' : 'text-emerald-400' },
-                { label: 'Cascade Round', value: selected.cascadeRound === 0 ? 'Direct' : `Round ${selected.cascadeRound}`, color: 'text-cyan-400' },
+                { label: 'Impact', value: selected.cascadeRound === 0 ? 'Direct hit' : `Cascade R${selected.cascadeRound}`, color: 'text-cyan-400' },
               ].map((s, i) => (
                 <div key={i} className="text-center p-2 rounded-lg bg-slate-900/50">
-                  <div className={`text-base font-bold ${s.color}`}>{s.value}</div>
+                  <div className={`text-sm font-bold ${s.color}`}>{s.value}</div>
                   <div className="text-[10px] text-slate-500">{s.label}</div>
                 </div>
               ))}
+            </div>
+
+            {/* Dependency chains */}
+            <div className="grid grid-cols-2 gap-3">
+              {/* Who damages this company */}
+              <div>
+                <div className="text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Damaged by ({selectedDeps.incoming.length})</div>
+                <div className="space-y-1 max-h-32 overflow-y-auto">
+                  {selectedDeps.incoming.length === 0 && (
+                    <div className="text-xs text-slate-600 italic">Direct climate impact only</div>
+                  )}
+                  {selectedDeps.incoming.map((d, i) => (
+                    <div key={i} className="flex items-center justify-between text-xs px-2 py-1 rounded bg-slate-900/30">
+                      <span className="text-slate-300 truncate flex-1">{d.name}</span>
+                      <span className="text-slate-500 mx-2">{EDGE_LABELS[d.type] || d.type.replace(/_/g, ' ')}</span>
+                      <span className="text-red-400 font-mono">{fmt(d.loss)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {/* Who this company damages */}
+              <div>
+                <div className="text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Cascades to ({selectedDeps.outgoing.length})</div>
+                <div className="space-y-1 max-h-32 overflow-y-auto">
+                  {selectedDeps.outgoing.length === 0 && (
+                    <div className="text-xs text-slate-600 italic">No downstream cascade</div>
+                  )}
+                  {selectedDeps.outgoing.map((d, i) => (
+                    <div key={i} className="flex items-center justify-between text-xs px-2 py-1 rounded bg-slate-900/30">
+                      <span className="text-slate-300 truncate flex-1">{d.name}</span>
+                      <span className="text-slate-500 mx-2">{EDGE_LABELS[d.type] || d.type.replace(/_/g, ' ')}</span>
+                      <span className="text-red-400 font-mono">{fmt(d.loss)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </motion.div>
         )}
