@@ -25,9 +25,10 @@ router = APIRouter(prefix="/api/simulate", tags=["simulate"])
 class SimulationRequest(BaseModel):
     """Free-form simulation request"""
     portfolio_id: str
-    event_description: str  # e.g. "Category 5 hurricane hits Houston, Texas"
-    severity: str = "high"  # low, medium, high, extreme
+    event_description: str
+    severity: str = "high"
     num_rounds: int = 3
+    num_companies: int = 15  # How many companies to simulate
 
     class Config:
         json_schema_extra = {
@@ -205,6 +206,8 @@ async def run_cascade_simulation(
         holdings_data,
         event_type=parsed["event_type"],
         affected_regions=parsed["regions"],
+        event_description=request.event_description,
+        num_companies=request.num_companies,
     )
     result = engine.run_simulation(
         agents=agents,

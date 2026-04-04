@@ -566,7 +566,7 @@ class LLMClient:
         self._consecutive_429s = 0
         self._rate_limiter = RateLimiter(requests_per_minute=10.0, burst=2)
         self._request_queue: deque = deque()
-        self._min_request_interval = 4.0  # seconds between requests
+        self._min_request_interval = 1.0  # 1s for local models, increase for cloud APIs
         self._last_request_time = 0.0
 
         if self.api_key:
@@ -584,7 +584,7 @@ class LLMClient:
                     api_key=self.api_key,
                     base_url=self.base_url,
                     max_retries=0,  # No automatic retries
-                    timeout=30.0,
+                    timeout=120.0,  # Local models can be slow on first call
                 )
                 self.available = True
                 logger.info(f"LLM client ready: model={self.model}, rate_limit=10 RPM")
@@ -723,6 +723,83 @@ def _lookup_companies(
     return companies
 
 
+def _generate_companies_with_llm(
+    event_description: str,
+    event_type: str,
+    affected_regions: List[str],
+    num_companies: int = 15,
+) -> List[Dict[str, Any]]:
+    """
+    Use the LLM to generate companies relevant to an arbitrary event.
+
+    For "What if all kitkats are stolen" the LLM will generate Nestlé,
+    Hershey, Walmart, convenience store chains, cocoa suppliers, etc.
+    Falls back to _lookup_companies if LLM fails.
+    """
+    llm = get_llm_client()
+    if not llm.available:
+        return []
+
+    import json as _json
+
+    system = (
+        "You generate lists of real companies that would be affected by an event. "
+        "Return ONLY valid JSON — an array of objects. No markdown, no explanation."
+    )
+    user = (
+        f"Event: {event_description}\n"
+        f"Event type: {event_type}\n"
+        f"Regions: {', '.join(affected_regions)}\n\n"
+        f"List {num_companies} real companies most affected by this event. "
+        f"Include direct victims AND their supply chain / dependency partners. "
+        f"For each company return:\n"
+        f'{{"name":"<real company name>","sector":"<one of: Energy, Utilities, '
+        f"Real Estate, Transportation, Agriculture, Materials, Technology, "
+        f"Financials, Healthcare, Consumer Discretionary, Consumer Staples, "
+        f'Communication Services>","type":"<specific business type>",'
+        f'"region":"<US state or country>","value":<market cap estimate in USD>,'
+        f'"carbon":<carbon intensity 0-500>,"ins":<insurance dependency 0-100>,'
+        f'"sc":<supply chain dependency 0-100>,'
+        f'"why":"<one sentence why this company is affected>"}}\n\n'
+        f"Return a JSON array of {num_companies} objects."
+    )
+
+    try:
+        raw = llm.chat(system, user, temperature=0.4)
+        if not raw:
+            return []
+        # Strip markdown fences
+        import re
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+            cleaned = re.sub(r"\s*```$", "", cleaned)
+        parsed = _json.loads(cleaned)
+        if not isinstance(parsed, list):
+            return []
+
+        companies = []
+        for co in parsed:
+            if not isinstance(co, dict) or "name" not in co:
+                continue
+            companies.append({
+                "name": co["name"],
+                "sector": co.get("sector", "Consumer Staples"),
+                "type": co.get("type", "Company"),
+                "region": co.get("region", "USA"),
+                "hq": co.get("region", "USA"),
+                "value": int(co.get("value", 10_000_000)),
+                "carbon": int(co.get("carbon", 50)),
+                "ins": int(co.get("ins", 50)),
+                "sc": int(co.get("sc", 60)),
+            })
+        logger.info(f"LLM generated {len(companies)} companies for: {event_description[:60]}")
+        return companies
+    except Exception as e:
+        logger.warning(f"LLM company generation failed: {e}")
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Main simulation engine
 # ---------------------------------------------------------------------------
@@ -759,11 +836,14 @@ class CascadeSimulationEngine:
         holdings: List[Dict],
         event_type: str = "compound",
         affected_regions: Optional[List[str]] = None,
+        event_description: str = "",
+        num_companies: int = 15,
     ) -> List[AgentPersona]:
         """
         Build agent list by merging:
         - Portfolio holdings (the user's actual positions)
-        - Dynamically generated companies relevant to the disaster
+        - LLM-generated companies relevant to the specific event (preferred)
+        - Hardcoded registry fallback if LLM unavailable
         """
         agents: List[AgentPersona] = []
         seen_names: set = set()
@@ -793,8 +873,18 @@ class CascadeSimulationEngine:
             ))
 
         # 2. Dynamically add disaster-relevant companies
+        #    Try LLM generation first (understands "all kitkats stolen" → Nestlé, Hershey...)
+        #    Fall back to hardcoded registry if LLM fails
         regions = affected_regions or ["USA"]
-        dynamic_companies = _lookup_companies(event_type, regions)
+        dynamic_companies = []
+        if event_description:
+            dynamic_companies = _generate_companies_with_llm(
+                event_description, event_type, regions, num_companies=num_companies,
+            )
+        if not dynamic_companies:
+            dynamic_companies = _lookup_companies(event_type, regions)
+            # Trim to requested count
+            dynamic_companies = dynamic_companies[:num_companies]
         for co in dynamic_companies:
             if co["name"] in seen_names:
                 continue
