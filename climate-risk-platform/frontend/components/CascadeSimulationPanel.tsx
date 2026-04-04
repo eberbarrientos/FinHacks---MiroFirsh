@@ -97,12 +97,13 @@ export function CascadeSimulationPanel({ portfolioId, className }: Props) {
         sector: entity.sector,
         region: entity.region,
         marketValue: entity.market_value,
-        riskScore: entity.loss_pct * 10, // Scale loss_pct to risk score
+        riskScore: Math.min(entity.loss_pct * 10, 100),
         loss: entity.total_loss,
         lossPct: entity.loss_pct,
         dependencies: [],
         isDirectlyAffected: minRound === 0,
         cascadeRound: minRound,
+        isPortfolioHolding: (entity as any).is_portfolio_holding ?? true,
       })
     })
 

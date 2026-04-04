@@ -41,10 +41,59 @@ class SimulationRequest(BaseModel):
 
 
 def parse_event(description: str) -> dict:
-    """Parse natural language event description into structured data"""
+    """
+    Parse event description using LLM first, keyword fallback second.
+
+    The LLM can understand arbitrary scenarios like "all silicon disappears"
+    and map them to affected sectors, regions, and an event type.
+    """
+    from app.engines.cascade_agents import get_llm_client
+    import json as _json
+
+    llm = get_llm_client()
+
+    # --- Try LLM-based parsing first ---
+    if llm.available:
+        try:
+            system = (
+                "You parse climate/economic/supply-chain event descriptions into structured JSON. "
+                "Return ONLY valid JSON with these keys:\n"
+                '  "event_type": one of hurricane, wildfire, flood, drought, heatwave, '
+                "carbon_tax, emissions_regulation, supply_shock, pandemic, cyberattack, compound\n"
+                '  "regions": list of US state names affected (use [] for global/nationwide)\n'
+                '  "affected_sectors": list of sectors impacted, from: Energy, Utilities, '
+                "Real Estate, Transportation, Agriculture, Materials, Technology, Financials, "
+                "Healthcare, Consumer Discretionary, Consumer Staples, Communication Services\n"
+                '  "sector_impact": dict mapping sector name to impact severity 0.0-1.0\n'
+                '  "reasoning": one sentence explaining your interpretation\n'
+            )
+            user = f"Event: {description}"
+            raw = llm.chat(system, user, temperature=0.2)
+            if raw:
+                # Strip markdown fences if present
+                cleaned = raw.strip()
+                if cleaned.startswith("```"):
+                    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+                    cleaned = re.sub(r"\s*```$", "", cleaned)
+                parsed = _json.loads(cleaned)
+                result = {
+                    "event_type": parsed.get("event_type", "compound"),
+                    "regions": parsed.get("regions", ["USA"]) or ["USA"],
+                    "affected_sectors": parsed.get("affected_sectors", []),
+                    "sector_impact": parsed.get("sector_impact", {}),
+                    "reasoning": parsed.get("reasoning", ""),
+                }
+                logger.info(f"LLM parsed event: {result['event_type']}, "
+                            f"regions={result['regions']}, "
+                            f"sectors={result['affected_sectors']}, "
+                            f"reasoning={result['reasoning']}")
+                return result
+        except Exception as e:
+            logger.warning(f"LLM event parsing failed, falling back to keywords: {e}")
+
+    # --- Keyword fallback ---
     desc_lower = description.lower()
 
-    # Detect event type
     event_type = "compound"
     type_keywords = {
         "hurricane": ["hurricane", "cyclone", "tropical storm", "typhoon"],
@@ -54,13 +103,14 @@ def parse_event(description: str) -> dict:
         "heatwave": ["heatwave", "heat wave", "extreme heat", "heat dome"],
         "carbon_tax": ["carbon tax", "carbon price", "carbon levy"],
         "emissions_regulation": ["emission", "regulation", "epa", "clean air"],
+        "supply_shock": ["silicon", "chip", "semiconductor", "shortage", "supply chain",
+                         "rare earth", "lithium", "cobalt", "disappear"],
     }
     for etype, keywords in type_keywords.items():
         if any(kw in desc_lower for kw in keywords):
             event_type = etype
             break
 
-    # Detect affected regions from US states and common regions
     us_states = [
         "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado",
         "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho",
@@ -78,7 +128,6 @@ def parse_event(description: str) -> dict:
         if state.lower() in desc_lower:
             regions_found.append(state)
 
-    # Also check for common region names
     region_aliases = {
         "gulf coast": ["Texas", "Louisiana", "Florida"],
         "east coast": ["New York", "New Jersey", "Virginia", "North Carolina"],
@@ -100,7 +149,7 @@ def parse_event(description: str) -> dict:
 
     regions_found = list(set(regions_found))
     if not regions_found:
-        regions_found = ["USA"]  # Default to all
+        regions_found = ["USA"]
 
     return {
         "event_type": event_type,
@@ -146,12 +195,17 @@ async def run_cascade_simulation(
             "supply_chain_dependency_score": float(h.supply_chain_dependency_score) if h.supply_chain_dependency_score else 0,
         })
 
-    # Parse event
+    # Parse event (LLM-powered when available, keyword fallback)
     parsed = parse_event(request.event_description)
 
-    # Run simulation
+    # Run simulation - build_agents dynamically generates companies
+    # relevant to the disaster type and region, not just portfolio holdings
     engine = CascadeSimulationEngine()
-    agents = engine.build_agents(holdings_data)
+    agents = engine.build_agents(
+        holdings_data,
+        event_type=parsed["event_type"],
+        affected_regions=parsed["regions"],
+    )
     result = engine.run_simulation(
         agents=agents,
         event_type=parsed["event_type"],
@@ -159,14 +213,16 @@ async def run_cascade_simulation(
         affected_regions=parsed["regions"],
         severity=request.severity,
         num_rounds=request.num_rounds,
+        llm_sector_impact=parsed.get("sector_impact"),
+        llm_affected_sectors=parsed.get("affected_sectors"),
     )
 
-    # Format response
     return {
         "scenario": request.event_description,
         "event_type": parsed["event_type"],
         "affected_regions": parsed["regions"],
         "severity": request.severity,
+        "event_reasoning": parsed.get("reasoning", ""),
         "simulation_rounds": result.total_rounds,
         "total_direct_loss": result.total_direct_loss,
         "total_cascaded_loss": result.total_cascaded_loss,

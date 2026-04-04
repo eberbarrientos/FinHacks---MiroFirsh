@@ -1,167 +1,175 @@
-# Climate Risk Intelligence Platform - Quick Start Guide
+# Climate Risk Intelligence Platform — Quickstart
 
-## Prerequisites
+## What This Is
 
-✅ Python 3.9.6 (Detected)
-✅ Node.js v25.6.1 (Detected)
+An agent-based climate risk simulation platform inspired by [MiroFish](https://github.com/MiroFish). You describe a climate event in plain English — "Category 5 hurricane hits the Texas Gulf Coast" or "all silicon disappears" — and the platform:
 
-## Option 1: Run with Docker (Recommended)
-
-### Step 1: Start Docker Desktop
-Make sure Docker Desktop is running on your Mac.
-
-### Step 2: Start Services
-```bash
-cd climate-risk-platform
-docker-compose up -d
-```
-
-This will start:
-- PostgreSQL (port 5432)
-- Redis (port 6379)
-- Backend API (port 8000)
-- Frontend (port 3000)
-- MiroFish Backend (port 8080)
-
-### Step 3: Access the Application
-- **Frontend Dashboard**: http://localhost:3000
-- **Backend API**: http://localhost:8000
-- **API Docs**: http://localhost:8000/docs
+1. **Parses the event** using an LLM (or keyword fallback) to identify the disaster type, affected regions, and impacted sectors
+2. **Dynamically generates company agents** relevant to the disaster (ExxonMobil for Texas hurricanes, PG&E for California wildfires, etc.)
+3. **Builds a knowledge graph** (networkx) of company dependencies — who supplies whom, who insures whom, who powers whom
+4. **Runs cascade simulation** where damage propagates through the dependency network across multiple rounds
+5. **Each agent reasons independently** using graph RAG — the LLM sees the agent's neighborhood in the knowledge graph (direct deps, indirect deps, damage state) and decides its own cascade loss
+6. **Generates narrative + recommendations** explaining what happened and what to do about it
 
 ---
 
-## Option 2: Run Locally (Without Docker)
+## Setup (2 minutes)
 
-### Step 1: Install PostgreSQL and Redis
+### Prerequisites
+- Python 3.10+
+- Node.js 18+
 
-**Using Homebrew:**
-```bash
-brew install postgresql@15 redis
-brew services start postgresql@15
-brew services start redis
-```
-
-### Step 2: Create Database
-```bash
-createdb climate_risk
-```
-
-### Step 3: Set Up Backend
+### 1. Backend
 
 ```bash
 cd climate-risk-platform/backend
-
-# Install dependencies
-pip3 install -r requirements.txt
-
-# Run database migrations
-alembic upgrade head
-
-# Start the backend server
-uvicorn app.main:app --reload --port 8000
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-Backend will be available at: http://localhost:8000
+### 2. API Key
 
-### Step 4: Set Up Frontend (New Terminal)
+Create `climate-risk-platform/backend/.env`:
+
+```env
+GEMINI_API_KEY=your-key-here
+```
+
+Get a free Gemini key at https://aistudio.google.com/apikey
+
+> **Without a key**, the platform still works — event parsing uses keyword matching, agents use rule-based math, and narratives are template-based. With a key, you get LLM-powered event understanding, per-agent reasoning with graph RAG context, and rich narratives.
+
+### 3. Frontend
 
 ```bash
 cd climate-risk-platform/frontend
+npm install
+```
 
-# Dependencies are already installed
-# Start the development server
+---
+
+## Run
+
+Terminal 1 — Backend:
+```bash
+cd climate-risk-platform/backend
+source venv/bin/activate
+uvicorn app.main:app --reload --port 8000
+```
+
+Terminal 2 — Frontend:
+```bash
+cd climate-risk-platform/frontend
 npm run dev
 ```
 
-Frontend will be available at: http://localhost:3000
+Open http://localhost:3000/dashboard
 
 ---
 
-## Option 3: Demo Mode (Backend Only - No Database)
+## How To Use
 
-If you just want to explore the API and test the risk engines:
+1. The platform auto-seeds a portfolio with 50 real companies on first run
+2. Type any climate/economic event in the search bar, or click a quick scenario button
+3. Watch the simulation results:
+   - **Agent Network** — interactive graph showing companies and their dependency connections. Larger nodes = more loss. Dashed rings = portfolio holdings. Click any node to see details.
+   - **Timeline** — cascade events grouped by round, showing how damage propagates
+   - **Narrative** — LLM-generated executive briefing (or rule-based summary)
+   - **Affected Entities** — sortable table of all impacted companies with loss amounts
+   - **Recommendations** — actionable portfolio actions
 
-```bash
-cd climate-risk-platform/backend
+### Example Scenarios
 
-# Run the test suite (uses in-memory SQLite)
-python3 -m pytest tests/ -v
+| Input | What Happens |
+|---|---|
+| "Category 5 hurricane hits Texas Gulf Coast" | Generates ExxonMobil, CenterPoint Energy, ERCOT, Valero, etc. Cascade through energy → utilities → transportation |
+| "Massive wildfire in Northern California" | Generates PG&E, Chevron, Prologis, Driscoll's. Cascade through utilities → real estate → agriculture |
+| "All silicon disappears from earth" | LLM parses as supply_shock → Technology, Materials, Consumer Discretionary. Generates Apple, NVIDIA, Dell, etc. |
+| "Federal carbon tax of $200/ton" | Policy event → hits all high-carbon sectors nationwide. Energy and Materials take heaviest losses |
 
-# View test results
-cat TEST_RESULTS.md
+---
+
+## Architecture
+
+```
+User types event
+       │
+       ▼
+┌─────────────────┐
+│  Event Parser   │  LLM or keyword fallback
+│  (simulate.py)  │  → event_type, regions, affected_sectors
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│  Dynamic Agent Builder  │  Portfolio holdings + disaster-relevant companies
+│  (cascade_agents.py)    │  from COMPANIES_BY_SECTOR_REGION registry
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│  Knowledge Graph (RAG)  │  networkx DiGraph
+│  CompanyKnowledgeGraph  │  nodes = companies, edges = dependencies
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│  Cascade Simulation     │  Round 0: direct impact
+│  CascadeSimulationEngine│  Round 1-N: propagation with per-agent LLM reasoning
+└────────┬────────────────┘  Each agent gets graph RAG context in its prompt
+         │
+         ▼
+┌─────────────────────────┐
+│  Results                │  Events, affected entities, narrative, recommendations
+│  → Frontend             │  Agent network graph, timeline, tables
+└─────────────────────────┘
 ```
 
-This will run all 141 tests and show you the platform's capabilities.
+### MiroFish Pattern
+
+This follows the MiroFish philosophy:
+
+| MiroFish | Our Implementation |
+|---|---|
+| Text → Zep Knowledge Graph | Company registry + networkx `CompanyKnowledgeGraph` |
+| Zep graph search enriches agent context | `get_agent_context()` — 2-hop neighborhood walk with damage state |
+| Each agent gets own LLM call with persona | `_agent_llm_reasoning()` — system prompt includes graph RAG context |
+| OASIS social simulation rounds | Cascade rounds with dependency propagation |
+| Results stored back to graph | Damage accumulates across rounds, fed back into graph queries |
 
 ---
 
-## Quick Test
+## API
 
-Once the backend is running, test it:
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/simulate/run` | POST | Run cascade simulation |
+| `/api/portfolios` | GET | List portfolios |
+| `/api/portfolios/{id}` | GET | Portfolio details |
+| `/api/portfolios/sample/create` | POST | Create sample portfolio |
 
-```bash
-# Check health
-curl http://localhost:8000/health
+### Simulation Request
 
-# Get scenario templates
-curl http://localhost:8000/api/scenarios/templates
-
-# Get sample portfolio data
-curl http://localhost:8000/api/portfolios/sample
+```json
+{
+  "portfolio_id": "uuid",
+  "event_description": "Category 5 hurricane hits Texas Gulf Coast",
+  "severity": "high",
+  "num_rounds": 3
+}
 ```
 
 ---
 
-## What to Try First
+## Environment Variables
 
-1. **Upload a Portfolio**: Use the sample CSV or create your own
-2. **Select a Scenario**: Choose from 7 predefined climate scenarios
-3. **Calculate Risk**: Click "Calculate Risk" to run the analysis
-4. **Explore the Map**: View geographic risk distribution
-5. **Review Recommendations**: See actionable portfolio optimization suggestions
-6. **Export Report**: Generate a PDF executive summary
+| Variable | Required | Description |
+|---|---|---|
+| `GEMINI_API_KEY` | No* | Google Gemini API key (free at aistudio.google.com/apikey) |
+| `OPENAI_API_KEY` | No* | OpenAI API key (alternative to Gemini) |
+| `LLM_BASE_URL` | No | Custom LLM endpoint (for local models) |
+| `LLM_MODEL` | No | Custom model name |
+| `DATABASE_URL` | No | Defaults to SQLite (zero setup) |
 
----
-
-## Troubleshooting
-
-### Docker Issues
-- **"Cannot connect to Docker daemon"**: Start Docker Desktop
-- **Port already in use**: Stop other services using ports 3000, 5432, 6379, 8000, 8080
-
-### Backend Issues
-- **Database connection error**: Make sure PostgreSQL is running
-- **Redis connection error**: Make sure Redis is running
-- **Import errors**: Run `pip3 install -r requirements.txt`
-
-### Frontend Issues
-- **Module not found**: Run `npm install` in the frontend directory
-- **API connection error**: Make sure backend is running on port 8000
-
----
-
-## Next Steps
-
-- Review the [E2E Verification Report](E2E_VERIFICATION_REPORT.md) for detailed implementation status
-- Check the [Requirements Document](.kiro/specs/climate-risk-platform/requirements.md)
-- Explore the [Design Document](.kiro/specs/climate-risk-platform/design.md)
-- View the [Implementation Tasks](.kiro/specs/climate-risk-platform/tasks.md)
-
----
-
-## Performance Targets
-
-- Portfolio upload (< 1000 holdings): **< 5 seconds**
-- Risk calculation (< 1000 holdings): **< 10 seconds**
-- Dashboard render: **< 3 seconds**
-- Scenario switch: **< 3 seconds**
-
----
-
-## Support
-
-For issues or questions, refer to:
-- Backend logs: Check terminal output
-- Frontend logs: Check browser console (F12)
-- Test results: `climate-risk-platform/backend/TEST_RESULTS.md`
-- Verification report: `climate-risk-platform/E2E_VERIFICATION_REPORT.md`
+*Without any LLM key, the platform works with rule-based fallback. With a key, you get intelligent event parsing, per-agent graph RAG reasoning, and rich narratives.

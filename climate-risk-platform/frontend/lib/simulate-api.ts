@@ -27,6 +27,8 @@ export interface AffectedEntity {
   market_value: number
   total_loss: number
   loss_pct: number
+  is_portfolio_holding?: boolean
+  company_type?: string
 }
 
 export interface SimulationResult {
