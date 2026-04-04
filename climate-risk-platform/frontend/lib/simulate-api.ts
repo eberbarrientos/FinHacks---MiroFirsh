@@ -8,6 +8,7 @@ export interface SimulationRequest {
   event_description: string
   severity: string
   num_rounds: number
+  num_companies: number
 }
 
 export interface CascadeEvent {

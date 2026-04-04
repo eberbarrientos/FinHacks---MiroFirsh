@@ -46,6 +46,7 @@ export function CascadeSimulationPanel({ portfolioId, className }: Props) {
   const [eventText, setEventText] = useState('')
   const [severity, setSeverity] = useState('high')
   const [numRounds, setNumRounds] = useState(3)
+  const [numCompanies, setNumCompanies] = useState(15)
   const [isRunning, setIsRunning] = useState(false)
   const [result, setResult] = useState<SimulationResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -65,6 +66,7 @@ export function CascadeSimulationPanel({ portfolioId, className }: Props) {
         event_description: desc,
         severity,
         num_rounds: numRounds,
+        num_companies: numCompanies,
       })
       setResult(res)
       setActiveTab('network')
@@ -224,7 +226,19 @@ export function CascadeSimulationPanel({ portfolioId, className }: Props) {
           </div>
 
           {/* Advanced options */}
-          <div className="flex items-center gap-4 text-xs">
+          <div className="flex items-center gap-4 text-xs flex-wrap">
+            <label className="flex items-center gap-2 text-slate-400">
+              <span>Companies:</span>
+              <input
+                type="range"
+                min={5}
+                max={40}
+                value={numCompanies}
+                onChange={e => setNumCompanies(Number(e.target.value))}
+                className="w-24 accent-cyan-500"
+              />
+              <span className="text-cyan-400 font-mono w-6">{numCompanies}</span>
+            </label>
             <label className="flex items-center gap-2 text-slate-400">
               <span>Cascade Rounds:</span>
               <select
