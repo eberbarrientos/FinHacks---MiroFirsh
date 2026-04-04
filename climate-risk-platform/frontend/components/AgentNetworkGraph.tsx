@@ -404,12 +404,16 @@ export function AgentNetworkGraph({ agents, edges, onAgentSelect, className = ''
     return closest
   }, [agents])
 
+  const [popupPos, setPopupPos] = useState<{ x: number; y: number } | null>(null)
+
   const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = canvasRef.current?.getBoundingClientRect()
     if (!rect) return
-    const agent = getNodeAt(e.clientX - rect.left, e.clientY - rect.top)
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top
+    const agent = getNodeAt(mx, my)
     const next = agent && selected?.id === agent.id ? null : agent
     setSelected(next)
+    setPopupPos(next ? { x: mx, y: my } : null)
     onAgentSelect?.(next)
   }, [getNodeAt, selected, onAgentSelect])
 
@@ -471,81 +475,96 @@ export function AgentNetworkGraph({ agents, edges, onAgentSelect, className = ''
           onMouseMove={handleMove}
           onMouseLeave={() => setHovered(null)}
         />
+
+        {/* Floating popup near clicked node */}
+        <AnimatePresence>
+          {selected && popupPos && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 10 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+              className="absolute z-20 w-72 pointer-events-auto"
+              style={{
+                left: Math.min(popupPos.x + 15, dims.w - 290),
+                top: Math.min(popupPos.y - 20, dims.h - 300),
+              }}
+            >
+              <div className="rounded-xl bg-slate-900/95 backdrop-blur-xl border border-slate-600/50 shadow-2xl shadow-black/50 p-3">
+                {/* Header */}
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full" style={{ background: SECTOR_COLORS[selected.sector] || '#64748b' }} />
+                    <span className="text-white font-semibold text-sm">{selected.name}</span>
+                  </div>
+                  <button onClick={() => { setSelected(null); setPopupPos(null); onAgentSelect?.(null) }}
+                    className="text-slate-500 hover:text-white text-xs p-1 rounded hover:bg-slate-700/50">✕</button>
+                </div>
+                <div className="text-[10px] text-slate-500 mb-2">
+                  {selected.sector} · {selected.region} · {selected.isPortfolioHolding !== false ? 'Portfolio holding' : 'Dependency chain'}
+                </div>
+
+                {/* Stats */}
+                <div className="grid grid-cols-3 gap-2 mb-3">
+                  <div className="text-center p-1.5 rounded-lg bg-slate-800/60">
+                    <div className="text-xs font-bold text-white">${fmt(selected.marketValue)}</div>
+                    <div className="text-[9px] text-slate-500">Value</div>
+                  </div>
+                  <div className="text-center p-1.5 rounded-lg bg-slate-800/60">
+                    <div className="text-xs font-bold text-red-400">${fmt(selected.loss)}</div>
+                    <div className="text-[9px] text-slate-500">Loss</div>
+                  </div>
+                  <div className="text-center p-1.5 rounded-lg bg-slate-800/60">
+                    <div className={`text-xs font-bold ${selected.lossPct > 10 ? 'text-red-400' : selected.lossPct > 5 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                      {selected.lossPct.toFixed(1)}%
+                    </div>
+                    <div className="text-[9px] text-slate-500">Loss %</div>
+                  </div>
+                </div>
+
+                {/* Cascade chain */}
+                {selectedDeps.incoming.length > 0 && (
+                  <div className="mb-2">
+                    <div className="text-[9px] text-slate-500 uppercase tracking-wider mb-1">Damaged by</div>
+                    {selectedDeps.incoming.slice(0, 4).map((d, i) => (
+                      <div key={i} className="flex items-center gap-1 text-[10px] py-0.5">
+                        <span className="text-cyan-400">→</span>
+                        <span className="text-slate-300 truncate flex-1">{d.name}</span>
+                        <span className="text-slate-600">{EDGE_LABELS[d.type] || d.type.replace(/_/g, ' ')}</span>
+                        <span className="text-red-400 font-mono">{fmt(d.loss)}</span>
+                      </div>
+                    ))}
+                    {selectedDeps.incoming.length > 4 && (
+                      <div className="text-[9px] text-slate-600">+{selectedDeps.incoming.length - 4} more</div>
+                    )}
+                  </div>
+                )}
+                {selectedDeps.outgoing.length > 0 && (
+                  <div>
+                    <div className="text-[9px] text-slate-500 uppercase tracking-wider mb-1">Cascades to</div>
+                    {selectedDeps.outgoing.slice(0, 4).map((d, i) => (
+                      <div key={i} className="flex items-center gap-1 text-[10px] py-0.5">
+                        <span className="text-amber-400">←</span>
+                        <span className="text-slate-300 truncate flex-1">{d.name}</span>
+                        <span className="text-slate-600">{EDGE_LABELS[d.type] || d.type.replace(/_/g, ' ')}</span>
+                        <span className="text-red-400 font-mono">{fmt(d.loss)}</span>
+                      </div>
+                    ))}
+                    {selectedDeps.outgoing.length > 4 && (
+                      <div className="text-[9px] text-slate-600">+{selectedDeps.outgoing.length - 4} more</div>
+                    )}
+                  </div>
+                )}
+                {selectedDeps.incoming.length === 0 && selectedDeps.outgoing.length === 0 && (
+                  <div className="text-[10px] text-slate-600 italic">
+                    {selected.cascadeRound === 0 ? 'Directly hit by climate event' : 'Affected through sector-level cascade'}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
-
-      {/* Expanded detail panel when a node is selected */}
-      <AnimatePresence>
-        {selected && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            className="border-t border-slate-700/50 bg-slate-800/40 px-4 py-3"
-          >
-            {/* Stats row */}
-            <div className="flex items-center justify-between mb-3">
-              <div>
-                <span className="text-white font-medium text-sm">{selected.name}</span>
-                <span className="text-slate-500 text-xs ml-2">
-                  {selected.sector} · {selected.region}
-                  {selected.isPortfolioHolding !== false ? ' · Portfolio' : ' · Dependency'}
-                </span>
-              </div>
-              <button onClick={() => { setSelected(null); onAgentSelect?.(null) }}
-                className="text-slate-500 hover:text-white text-xs px-2 py-1 rounded hover:bg-slate-700/50">✕</button>
-            </div>
-            <div className="grid grid-cols-4 gap-3 mb-3">
-              {[
-                { label: 'Market Value', value: `$${fmt(selected.marketValue)}`, color: 'text-white' },
-                { label: 'Total Loss', value: `$${fmt(selected.loss)}`, color: 'text-red-400' },
-                { label: 'Loss %', value: `${selected.lossPct.toFixed(1)}%`, color: selected.lossPct > 10 ? 'text-red-400' : selected.lossPct > 5 ? 'text-amber-400' : 'text-emerald-400' },
-                { label: 'Impact', value: selected.cascadeRound === 0 ? 'Direct hit' : `Cascade R${selected.cascadeRound}`, color: 'text-cyan-400' },
-              ].map((s, i) => (
-                <div key={i} className="text-center p-2 rounded-lg bg-slate-900/50">
-                  <div className={`text-sm font-bold ${s.color}`}>{s.value}</div>
-                  <div className="text-[10px] text-slate-500">{s.label}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Dependency chains */}
-            <div className="grid grid-cols-2 gap-3">
-              {/* Who damages this company */}
-              <div>
-                <div className="text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Damaged by ({selectedDeps.incoming.length})</div>
-                <div className="space-y-1 max-h-32 overflow-y-auto">
-                  {selectedDeps.incoming.length === 0 && (
-                    <div className="text-xs text-slate-600 italic">Direct climate impact only</div>
-                  )}
-                  {selectedDeps.incoming.map((d, i) => (
-                    <div key={i} className="flex items-center justify-between text-xs px-2 py-1 rounded bg-slate-900/30">
-                      <span className="text-slate-300 truncate flex-1">{d.name}</span>
-                      <span className="text-slate-500 mx-2">{EDGE_LABELS[d.type] || d.type.replace(/_/g, ' ')}</span>
-                      <span className="text-red-400 font-mono">{fmt(d.loss)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              {/* Who this company damages */}
-              <div>
-                <div className="text-[10px] text-slate-500 mb-1 uppercase tracking-wider">Cascades to ({selectedDeps.outgoing.length})</div>
-                <div className="space-y-1 max-h-32 overflow-y-auto">
-                  {selectedDeps.outgoing.length === 0 && (
-                    <div className="text-xs text-slate-600 italic">No downstream cascade</div>
-                  )}
-                  {selectedDeps.outgoing.map((d, i) => (
-                    <div key={i} className="flex items-center justify-between text-xs px-2 py-1 rounded bg-slate-900/30">
-                      <span className="text-slate-300 truncate flex-1">{d.name}</span>
-                      <span className="text-slate-500 mx-2">{EDGE_LABELS[d.type] || d.type.replace(/_/g, ' ')}</span>
-                      <span className="text-red-400 font-mono">{fmt(d.loss)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   )
 }
