@@ -126,3 +126,7 @@ MiroFish-main/
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
+
+# Stray docs
+PLATFORM_OVERVIEW.md
+frontend/components/RecommendationsPanel.md

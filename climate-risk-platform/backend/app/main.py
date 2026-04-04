@@ -1,9 +1,21 @@
 """FastAPI application entry point"""
 
+import os
+from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+
+# Load .env into os.environ BEFORE anything else reads env vars
+try:
+    from dotenv import load_dotenv
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path, override=True)
+except ImportError:
+    pass  # python-dotenv not installed, rely on actual env vars
+
 from app.config import settings
 from app.database import check_database_health, init_db, SessionLocal
 from app.utils.redis_client import check_redis_health

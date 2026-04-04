@@ -491,14 +491,25 @@ class SimulationResult:
 # LLM Client (optional - falls back to rule-based)
 # ---------------------------------------------------------------------------
 
+import time as _time
+
+
 class LLMClient:
-    """Lightweight LLM client supporting Gemini and OpenAI-compatible APIs"""
+    """
+    LLM client with aggressive rate-limit protection.
+
+    Gemini free tier: 15 RPM, 1M tokens/min, 1500 RPD.
+    When we get a 429, we stop ALL calls for the retry delay period
+    instead of hammering the API with retries.
+    """
 
     def __init__(self):
         self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("OPENAI_API_KEY")
         self.base_url = os.environ.get("LLM_BASE_URL", "")
         self.model = os.environ.get("LLM_MODEL", "")
         self.available = False
+        self._rate_limited_until = 0.0  # timestamp when we can try again
+        self._consecutive_429s = 0
 
         if self.api_key:
             try:
@@ -510,7 +521,13 @@ class LLMClient:
                     self.model = self.model or "gpt-4o-mini"
 
                 from openai import OpenAI
-                self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+                # Disable the SDK's built-in retries — we handle rate limits ourselves
+                self.client = OpenAI(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    max_retries=0,  # No automatic retries
+                    timeout=15.0,
+                )
                 self.available = True
                 logger.info(f"LLM client ready: model={self.model}")
             except Exception as e:
@@ -518,8 +535,35 @@ class LLMClient:
         else:
             logger.info("No LLM API key found, using rule-based cascade simulation")
 
+    def _is_rate_limited(self) -> bool:
+        """Check if we're in a cooldown period from a previous 429."""
+        if _time.time() < self._rate_limited_until:
+            return True
+        return False
+
+    def _handle_rate_limit(self, error_msg: str):
+        """Parse retry delay from 429 response and set cooldown."""
+        self._consecutive_429s += 1
+        # Extract retry delay from error message if present
+        import re
+        match = re.search(r'retry in ([\d.]+)s', str(error_msg))
+        if match:
+            delay = float(match.group(1))
+        else:
+            delay = min(30 * self._consecutive_429s, 120)  # Exponential backoff, max 2 min
+
+        self._rate_limited_until = _time.time() + delay
+        logger.warning(
+            f"Rate limited (429 #{self._consecutive_429s}). "
+            f"Cooling down for {delay:.0f}s. All LLM calls will skip until then."
+        )
+
     def chat(self, system_prompt: str, user_prompt: str, temperature: float = 0.7) -> Optional[str]:
         if not self.available:
+            return None
+        if self._is_rate_limited():
+            remaining = self._rate_limited_until - _time.time()
+            logger.debug(f"LLM call skipped — rate limited for {remaining:.0f}s more")
             return None
         try:
             response = self.client.chat.completions.create(
@@ -531,9 +575,14 @@ class LLMClient:
                 temperature=temperature,
                 max_tokens=2000,
             )
+            self._consecutive_429s = 0  # Reset on success
             return response.choices[0].message.content
         except Exception as e:
-            logger.warning(f"LLM call failed: {e}")
+            err_str = str(e)
+            if "429" in err_str or "rate" in err_str.lower() or "quota" in err_str.lower():
+                self._handle_rate_limit(err_str)
+            else:
+                logger.warning(f"LLM call failed: {err_str[:200]}")
             return None
 
 
@@ -886,9 +935,15 @@ class CascadeSimulationEngine:
         if self.llm.available and round_num == 1 and candidates:
             # Sort by potential impact (more damaged deps = higher priority)
             candidates.sort(key=lambda x: len(x[2]), reverse=True)
-            llm_limit = min(8, len(candidates))  # Max 8 LLM calls per round
+            llm_limit = min(3, len(candidates))  # Max 3 LLM calls to stay within rate limits
 
             for agent, deps, damaged_deps in candidates[:llm_limit]:
+                # Respect rate limits — skip if we got 429'd
+                if self.llm._is_rate_limited():
+                    event = self._agent_rule_based(agent, deps, damaged_deps, round_num, severity_mult)
+                    if event:
+                        events.append(event)
+                    continue
                 event = self._agent_llm_reasoning(
                     agent, damaged_deps, agent_damage, agent_map,
                     event_description, event_type, round_num, severity_mult,
