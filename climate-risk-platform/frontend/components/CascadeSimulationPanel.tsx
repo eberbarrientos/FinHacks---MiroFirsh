@@ -476,20 +476,52 @@ export function CascadeSimulationPanel({ portfolioId, className }: Props) {
                     exit={{ opacity: 0 }}
                     className="space-y-3"
                   >
-                    {result.recommendations.map((r, i) => (
-                      <motion.div
-                        key={i}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: i * 0.1 }}
-                        className="flex items-start gap-3 p-3 rounded-xl bg-slate-800/30 border border-slate-700/30 hover:bg-slate-800/50 transition-colors"
-                      >
-                        <span className="shrink-0 w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-500/20 to-teal-500/20 border border-cyan-500/30 text-cyan-400 flex items-center justify-center text-xs font-bold">
-                          {i + 1}
-                        </span>
-                        <span className="text-sm text-slate-300">{r}</span>
-                      </motion.div>
-                    ))}
+                    {result.recommendations.map((r, i) => {
+                      const rec = typeof r === 'string' ? { category: 'monitor', action: r, rationale: '', priority: 'medium', affected_entities: [] } : r
+                      const catIcons: Record<string, string> = {
+                        rebalance: '⚖️', hedge: '🛡️', diversify: '🌐',
+                        insure: '🏦', monitor: '👁️', exit: '🚪',
+                      }
+                      const prioColors: Record<string, string> = {
+                        high: 'text-red-400 bg-red-500/10 border-red-500/30',
+                        medium: 'text-amber-400 bg-amber-500/10 border-amber-500/30',
+                        low: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30',
+                      }
+                      return (
+                        <motion.div
+                          key={i}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: i * 0.08 }}
+                          className="p-3 rounded-xl bg-slate-800/30 border border-slate-700/30 hover:bg-slate-800/50 transition-colors"
+                        >
+                          <div className="flex items-start gap-3">
+                            <span className="text-lg mt-0.5">{catIcons[rec.category] || '📋'}</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="text-sm text-white font-medium">{rec.action}</span>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${prioColors[rec.priority] || prioColors.medium}`}>
+                                  {rec.priority}
+                                </span>
+                                <span className="text-[10px] text-slate-500 px-1.5 py-0.5 rounded bg-slate-800/50">
+                                  {rec.category}
+                                </span>
+                              </div>
+                              {rec.rationale && (
+                                <p className="text-xs text-slate-400 mb-1">{rec.rationale}</p>
+                              )}
+                              {rec.affected_entities && rec.affected_entities.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {rec.affected_entities.slice(0, 4).map((e: string, j: number) => (
+                                    <span key={j} className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700/50 text-slate-400">{e}</span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </motion.div>
+                      )
+                    })}
                   </motion.div>
                 )}
               </AnimatePresence>
