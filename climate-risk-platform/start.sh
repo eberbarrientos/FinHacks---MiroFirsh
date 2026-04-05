@@ -133,4 +133,22 @@ echo "════════════════════════�
 echo "  Press Ctrl+C to stop everything"
 echo ""
 
+# ----------------------------------------------------------
+# 9. Monitor Ollama — restart if it crashes
+# ----------------------------------------------------------
+while true; do
+  sleep 15
+  if ! curl -s http://localhost:11434/api/tags &>/dev/null; then
+    echo "⚠️  Ollama crashed — restarting..."
+    OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 ollama serve &>/dev/null &
+    sleep 3
+    # Re-warm the model
+    curl -s http://localhost:11434/v1/chat/completions \
+      -H "Content-Type: application/json" \
+      -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":5}" \
+      > /dev/null 2>&1
+    echo "✅ Ollama restarted"
+  fi
+done &
+
 wait

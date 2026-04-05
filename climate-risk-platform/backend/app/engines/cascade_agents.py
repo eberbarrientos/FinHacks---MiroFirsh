@@ -657,7 +657,7 @@ class LLMClient:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=temperature,
-                max_tokens=2000,
+                max_tokens=4000,
             )
             self._consecutive_429s = 0  # Reset on success
             return response.choices[0].message.content
@@ -731,14 +731,14 @@ def _generate_companies_with_llm(
 ) -> List[Dict[str, Any]]:
     """
     Use the LLM to generate companies relevant to an arbitrary event.
-
-    For "What if all kitkats are stolen" the LLM will generate Nestlé,
-    Hershey, Walmart, convenience store chains, cocoa suppliers, etc.
-    Falls back to _lookup_companies if LLM fails.
+    Caps at 15 per LLM call to keep the 3B model reliable.
     """
     llm = get_llm_client()
     if not llm.available:
         return []
+
+    # Cap per-call to keep small models reliable
+    ask_count = min(num_companies, 15)
 
     import json as _json
 
@@ -750,7 +750,7 @@ def _generate_companies_with_llm(
         f"Event: {event_description}\n"
         f"Event type: {event_type}\n"
         f"Regions: {', '.join(affected_regions)}\n\n"
-        f"List {num_companies} real companies most affected by this event. "
+        f"List {ask_count} real companies most affected by this event. "
         f"Include direct victims AND their supply chain / dependency partners. "
         f"For each company return:\n"
         f'{{"name":"<real company name>","sector":"<one of: Energy, Utilities, '
@@ -761,7 +761,7 @@ def _generate_companies_with_llm(
         f'"carbon":<carbon intensity 0-500>,"ins":<insurance dependency 0-100>,'
         f'"sc":<supply chain dependency 0-100>,'
         f'"why":"<one sentence why this company is affected>"}}\n\n'
-        f"Return a JSON array of {num_companies} objects."
+        f"Return a JSON array of {ask_count} objects."
     )
 
     try:
@@ -840,19 +840,80 @@ class CascadeSimulationEngine:
         num_companies: int = 15,
     ) -> List[AgentPersona]:
         """
-        Build agent list by merging:
-        - Portfolio holdings (the user's actual positions)
-        - LLM-generated companies relevant to the specific event (preferred)
-        - Hardcoded registry fallback if LLM unavailable
+        Build agents. num_companies controls the TOTAL agent count.
+
+        Priority:
+        1. LLM-generated companies relevant to the event (primary)
+        2. Portfolio holdings that match affected regions/sectors (secondary)
+        3. Hardcoded registry fallback
         """
         agents: List[AgentPersona] = []
         seen_names: set = set()
+        regions = affected_regions or ["USA"]
 
-        # 1. Portfolio holdings become agents first
+        # --- Step 1: LLM-generated companies (the main actors) ---
+        dynamic_companies: List[Dict[str, Any]] = []
+        if event_description:
+            dynamic_companies = _generate_companies_with_llm(
+                event_description, event_type, regions,
+                num_companies=num_companies,
+            )
+        if not dynamic_companies:
+            dynamic_companies = _lookup_companies(event_type, regions)
+
+        dynamic_companies = dynamic_companies[:num_companies]
+
+        for co in dynamic_companies:
+            if co["name"] in seen_names:
+                continue
+            seen_names.add(co["name"])
+            sector = co.get("sector", "Consumer Staples")
+            deps = SECTOR_DEPENDENCIES.get(sector, ["suppliers", "regulators"])
+            agents.append(AgentPersona(
+                entity_id=f"dyn_{co['name'].lower().replace(' ', '_')[:30]}",
+                name=co["name"],
+                sector=sector,
+                region=co.get("region", co.get("hq", "USA")),
+                market_value=float(co.get("value", 10_000_000)),
+                combined_score=50.0,
+                expected_loss=0.0,
+                dependencies=deps,
+                carbon_intensity=float(co.get("carbon", 100)),
+                insurance_dependency=float(co.get("ins", 50)),
+                supply_chain_dependency=float(co.get("sc", 60)),
+                is_portfolio_holding=False,
+                company_type=co.get("type", ""),
+            ))
+
+        # --- Step 2: Add portfolio holdings that are relevant ---
+        # Only add holdings whose region or sector overlaps with the event
+        norm_regions = {r.lower() for r in regions}
+        affected_sectors = set()
+        for a in agents:
+            affected_sectors.add(a.sector)
+
+        portfolio_added = 0
+        max_portfolio = max(5, num_companies // 2)  # At most half from portfolio
+
         for h in holdings:
             name = h.get("issuer_name", h.get("asset_name", "Unknown"))
             if name in seen_names:
                 continue
+
+            h_region = (h.get("state_region") or h.get("country") or "").lower()
+            h_sector = h.get("sector", "")
+
+            # Include if region matches, sector matches, or it's a global event
+            is_relevant = (
+                "usa" in norm_regions
+                or any(nr in h_region for nr in norm_regions)
+                or h_sector in affected_sectors
+            )
+            if not is_relevant:
+                continue
+            if portfolio_added >= max_portfolio:
+                break
+
             seen_names.add(name)
             sector = h.get("sector", "Unknown")
             deps = SECTOR_DEPENDENCIES.get(sector, ["suppliers", "regulators"])
@@ -871,41 +932,7 @@ class CascadeSimulationEngine:
                 is_portfolio_holding=True,
                 company_type=h.get("asset_type", ""),
             ))
-
-        # 2. Dynamically add disaster-relevant companies
-        #    Try LLM generation first (understands "all kitkats stolen" → Nestlé, Hershey...)
-        #    Fall back to hardcoded registry if LLM fails
-        regions = affected_regions or ["USA"]
-        dynamic_companies = []
-        if event_description:
-            dynamic_companies = _generate_companies_with_llm(
-                event_description, event_type, regions, num_companies=num_companies,
-            )
-        if not dynamic_companies:
-            dynamic_companies = _lookup_companies(event_type, regions)
-            # Trim to requested count
-            dynamic_companies = dynamic_companies[:num_companies]
-        for co in dynamic_companies:
-            if co["name"] in seen_names:
-                continue
-            seen_names.add(co["name"])
-            sector = co["sector"]
-            deps = SECTOR_DEPENDENCIES.get(sector, ["suppliers", "regulators"])
-            agents.append(AgentPersona(
-                entity_id=f"dyn_{co['name'].lower().replace(' ', '_')}",
-                name=co["name"],
-                sector=sector,
-                region=co.get("region", co.get("hq", "USA")),
-                market_value=float(co.get("value", 10_000_000)),
-                combined_score=50.0,
-                expected_loss=0.0,
-                dependencies=deps,
-                carbon_intensity=float(co.get("carbon", 100)),
-                insurance_dependency=float(co.get("ins", 50)),
-                supply_chain_dependency=float(co.get("sc", 60)),
-                is_portfolio_holding=False,
-                company_type=co.get("type", ""),
-            ))
+            portfolio_added += 1
 
         logger.info(
             f"Built {len(agents)} agents: "
@@ -976,7 +1003,7 @@ class CascadeSimulationEngine:
             event_type, event_description, affected_regions, severity,
             all_events, affected, total_direct, total_cascaded,
         )
-        recs = self._generate_recommendations(affected, event_type, total_direct + total_cascaded)
+        recs = self._generate_recommendations(affected, event_type, total_direct + total_cascaded, event_description)
 
         return SimulationResult(
             scenario_description=event_description,
@@ -1043,7 +1070,11 @@ class CascadeSimulationEngine:
             sector_impacts = {s: 0.6 for s in llm_affected_sectors}
 
         for agent in agents:
-            if is_policy or is_global:
+            # LLM-generated agents are ALWAYS relevant — the LLM created them
+            # specifically for this event. Portfolio holdings need region matching.
+            if not agent.is_portfolio_holding:
+                region_match = True
+            elif is_policy or is_global:
                 region_match = True
             else:
                 region_match = (
@@ -1054,7 +1085,14 @@ class CascadeSimulationEngine:
             if not region_match:
                 continue
 
-            impact = sector_impacts.get(agent.sector, 0.15 if (is_policy or is_global) else 0.0)
+            impact = sector_impacts.get(agent.sector, 0.0)
+            # For LLM-generated agents with no sector match, give base impact
+            # since the LLM specifically chose them as affected
+            if impact == 0 and not agent.is_portfolio_holding:
+                impact = 0.5
+            # For policy/global events, give portfolio holdings a base impact
+            elif impact == 0 and (is_policy or is_global):
+                impact = 0.15
             if impact == 0:
                 continue
 
@@ -1084,13 +1122,12 @@ class CascadeSimulationEngine:
         event_description: str, event_type: str,
     ) -> List[CascadeEvent]:
         """
-        Cascade propagation with per-agent LLM reasoning.
+        MiroFish-style interactive cascade propagation.
 
-        When an LLM is available, each significantly-affected agent gets its own
-        LLM call to reason about how the damage to its dependencies affects it.
-        This is the MiroFish-style approach: each agent is a separate context.
-
-        Falls back to rule-based propagation when no LLM is available.
+        Key difference from before: agents' LLM outputs from this round become
+        context for other agents in the SAME round. Agent A's reasoning about
+        grid failure feeds into Agent B's reasoning about supply chain disruption.
+        This creates emergent cascade behavior, not independent parallel reasoning.
         """
         events = []
         damaged_set = {n for n, d in agent_damage.items() if d > 0}
@@ -1104,43 +1141,41 @@ class CascadeSimulationEngine:
             if damaged_deps:
                 candidates.append((agent, deps, damaged_deps))
 
-        # If LLM available and round 1, do per-agent reasoning for top candidates
-        # (limit to avoid excessive API calls - MiroFish style batching)
-        if self.llm.available and round_num == 1 and candidates:
-            # Sort by potential impact (more damaged deps = higher priority)
-            candidates.sort(key=lambda x: len(x[2]), reverse=True)
-            # Only do 1-2 LLM calls max per round to stay well within rate limits
-            llm_limit = min(2, len(candidates))
+        if not candidates:
+            return events
 
-            for agent, deps, damaged_deps in candidates[:llm_limit]:
-                # Respect rate limits — skip if we got 429'd
-                if self.llm._is_rate_limited():
-                    event = self._agent_rule_based(agent, deps, damaged_deps, round_num, severity_mult)
-                    if event:
-                        events.append(event)
-                    continue
+        # Sort by dependency damage (most affected first — they react first)
+        candidates.sort(key=lambda x: len(x[2]), reverse=True)
+
+        # Track this round's reactions so later agents see earlier agents' outputs
+        round_reactions: List[str] = []
+
+        # LLM reasoning for top agents (if available), with interaction
+        llm_limit = min(3, len(candidates)) if self.llm.available else 0
+
+        for idx, (agent, deps, damaged_deps) in enumerate(candidates):
+            if idx < llm_limit and not self.llm._is_rate_limited():
                 event = self._agent_llm_reasoning(
                     agent, damaged_deps, agent_damage, agent_map,
                     event_description, event_type, round_num, severity_mult,
+                    prior_reactions=round_reactions,  # Feed earlier agents' outputs
                 )
                 if event:
                     events.append(event)
-
-            # Rule-based for the rest
-            for agent, deps, damaged_deps in candidates[llm_limit:]:
+                    # This agent's reaction becomes context for the next agent
+                    round_reactions.append(
+                        f"{agent.name} ({agent.sector}): {event.description} "
+                        f"[loss: ${event.loss_amount:,.0f}]"
+                    )
+            else:
                 event = self._agent_rule_based(
                     agent, deps, damaged_deps, round_num, severity_mult,
                 )
                 if event:
                     events.append(event)
-        else:
-            # Pure rule-based for all
-            for agent, deps, damaged_deps in candidates:
-                event = self._agent_rule_based(
-                    agent, deps, damaged_deps, round_num, severity_mult,
-                )
-                if event:
-                    events.append(event)
+                    round_reactions.append(
+                        f"{agent.name} ({agent.sector}): cascade loss ${event.loss_amount:,.0f}"
+                    )
 
         return events
 
@@ -1149,13 +1184,19 @@ class CascadeSimulationEngine:
         agent_damage: Dict[str, float], agent_map: Dict[str, AgentPersona],
         event_description: str, event_type: str,
         round_num: int, severity_mult: float,
+        prior_reactions: Optional[List[str]] = None,
     ) -> Optional[CascadeEvent]:
         """
-        Give this agent its own LLM context enriched by graph RAG.
+        MiroFish-style autonomous agent reasoning.
 
-        MiroFish pattern: query the knowledge graph for the agent's neighborhood,
-        build a rich context showing direct deps, indirect deps, damage state,
-        sector summaries — then let the agent reason about its own cascade impact.
+        Each agent gets:
+        1. Its own persona (company identity, sector, dependencies)
+        2. Graph RAG context (2-hop neighborhood with damage state)
+        3. Prior agents' reactions from this round (interactive cascade)
+
+        The agent reasons about its own situation and decides its loss.
+        This mirrors MiroFish where each agent sees other agents' posts
+        and reacts — here each agent sees other agents' cascade reactions.
         """
         import json as _json
 
@@ -1166,13 +1207,22 @@ class CascadeSimulationEngine:
                 agent.name, agent_damage, max_hops=2
             )
 
+        # Build the "social feed" — what other agents have done this round
+        reactions_context = ""
+        if prior_reactions:
+            reactions_context = (
+                "\n\nOther companies' reactions this round:\n"
+                + "\n".join(f"  • {r}" for r in prior_reactions[-5:])
+            )
+
         system = (
             f"You are {agent.name}, a {agent.sector} company ({agent.company_type}) "
             f"based in {agent.region} with market value ${agent.market_value:,.0f}.\n\n"
-            f"{graph_context}\n\n"
-            f"Based on your position in the dependency network and the damage to "
-            f"your dependencies, estimate your cascade loss. "
-            f"Respond ONLY with valid JSON."
+            f"{graph_context}"
+            f"{reactions_context}\n\n"
+            f"Based on your position in the dependency network, the damage to "
+            f"your dependencies, and how other companies are reacting, "
+            f"estimate your cascade loss. Respond ONLY with valid JSON."
         )
         user = (
             f"Event: {event_description}\n\n"
@@ -1353,51 +1403,165 @@ class CascadeSimulationEngine:
 
     def _generate_recommendations(
         self, affected: List[Dict], event_type: str, total_loss: float,
-    ) -> List[str]:
-        recs = []
+        event_description: str = "",
+    ) -> List[Dict[str, Any]]:
+        """
+        Generate structured recommendations using LLM with simulation context.
+        Falls back to rule-based if LLM unavailable.
+        """
+        # Try LLM-powered recommendations
+        if self.llm.available and not self.llm._is_rate_limited() and affected:
+            recs = self._generate_recommendations_llm(
+                affected, event_type, total_loss, event_description,
+            )
+            if recs:
+                return recs
+
+        return self._generate_recommendations_rules(affected, event_type, total_loss)
+
+    def _generate_recommendations_llm(
+        self, affected: List[Dict], event_type: str, total_loss: float,
+        event_description: str,
+    ) -> List[Dict[str, Any]]:
+        import json as _json
+
+        # Build context from simulation results
+        portfolio_hit = [a for a in affected if a.get("is_portfolio_holding")]
+        dep_hit = [a for a in affected if not a.get("is_portfolio_holding")]
+        sectors: Dict[str, float] = {}
+        for a in affected:
+            sectors[a["sector"]] = sectors.get(a["sector"], 0) + a["total_loss"]
+
+        context = (
+            f"Event: {event_description}\n"
+            f"Total portfolio loss: ${total_loss:,.0f}\n"
+            f"Portfolio holdings affected: {len(portfolio_hit)}\n"
+            f"Dependency-chain companies affected: {len(dep_hit)}\n\n"
+            f"Top 5 losses:\n"
+        )
+        for a in affected[:5]:
+            tag = "PORTFOLIO" if a.get("is_portfolio_holding") else "DEPENDENCY"
+            context += f"  {a['entity']} ({a['sector']}, {a['region']}) [{tag}]: ${a['total_loss']:,.0f} ({a['loss_pct']:.1f}%)\n"
+        context += f"\nSector losses: {', '.join(f'{s}: ${v:,.0f}' for s, v in sorted(sectors.items(), key=lambda x: -x[1])[:5])}\n"
+
+        system = (
+            "You are a climate risk portfolio advisor. Generate actionable recommendations "
+            "based on cascade simulation results. Return ONLY a JSON array of objects."
+        )
+        user = (
+            f"{context}\n"
+            f"Generate 5-7 specific recommendations. Each must be a JSON object with:\n"
+            f'{{"category": "<one of: rebalance, hedge, diversify, insure, monitor, exit>",'
+            f' "action": "<specific actionable recommendation>",'
+            f' "rationale": "<why this matters based on the simulation>",'
+            f' "priority": "<high|medium|low>",'
+            f' "affected_entities": ["<company names this applies to>"]}}\n\n'
+            f"Categories:\n"
+            f"- rebalance: reduce overweight positions in damaged sectors\n"
+            f"- hedge: specific hedging instruments or strategies\n"
+            f"- diversify: add exposure to resilient sectors/regions\n"
+            f"- insure: insurance or protection strategies\n"
+            f"- monitor: watchlist items and early warning signals\n"
+            f"- exit: positions to close entirely\n\n"
+            f"Return a JSON array."
+        )
+
+        try:
+            raw = self.llm.chat(system, user, temperature=0.4)
+            if not raw:
+                return []
+            import re
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+                cleaned = re.sub(r"\s*```$", "", cleaned)
+            parsed = _json.loads(cleaned)
+            if not isinstance(parsed, list):
+                return []
+            # Validate structure
+            valid = []
+            for r in parsed:
+                if isinstance(r, dict) and "action" in r:
+                    valid.append({
+                        "category": r.get("category", "monitor"),
+                        "action": r.get("action", ""),
+                        "rationale": r.get("rationale", ""),
+                        "priority": r.get("priority", "medium"),
+                        "affected_entities": r.get("affected_entities", []),
+                    })
+            return valid
+        except Exception as e:
+            logger.warning(f"LLM recommendations failed: {e}")
+            return []
+
+    def _generate_recommendations_rules(
+        self, affected: List[Dict], event_type: str, total_loss: float,
+    ) -> List[Dict[str, Any]]:
+        """Rule-based fallback recommendations."""
+        recs: List[Dict[str, Any]] = []
+
         if affected:
             top = affected[0]
-            recs.append(
-                f"Reduce exposure to {top['entity']} ({top['sector']}) "
-                f"- highest loss at ${top['total_loss']:,.0f}"
-            )
+            recs.append({
+                "category": "rebalance",
+                "action": f"Reduce exposure to {top['entity']} ({top['sector']})",
+                "rationale": f"Highest cascade loss at ${top['total_loss']:,.0f} ({top['loss_pct']:.1f}% of value)",
+                "priority": "high",
+                "affected_entities": [top["entity"]],
+            })
 
         sectors: Dict[str, float] = {}
         for a in affected:
             sectors[a["sector"]] = sectors.get(a["sector"], 0) + a["total_loss"]
         if sectors:
             worst = max(sectors, key=sectors.get)  # type: ignore[arg-type]
-            recs.append(
-                f"Diversify away from {worst} sector "
-                f"- ${sectors[worst]:,.0f} in cascade losses"
-            )
+            recs.append({
+                "category": "diversify",
+                "action": f"Diversify away from {worst} sector into resilient alternatives",
+                "rationale": f"${sectors[worst]:,.0f} concentrated in {worst} from cascade effects",
+                "priority": "high",
+                "affected_entities": [a["entity"] for a in affected if a["sector"] == worst][:3],
+            })
 
         regions: Dict[str, float] = {}
         for a in affected:
             regions[a["region"]] = regions.get(a["region"], 0) + a["total_loss"]
         if regions:
             worst_r = max(regions, key=regions.get)  # type: ignore[arg-type]
-            recs.append(
-                f"Reduce geographic concentration in {worst_r} "
-                f"- ${regions[worst_r]:,.0f} exposure"
-            )
+            recs.append({
+                "category": "diversify",
+                "action": f"Reduce geographic concentration in {worst_r}",
+                "rationale": f"${regions[worst_r]:,.0f} exposure concentrated in one region",
+                "priority": "medium",
+                "affected_entities": [a["entity"] for a in affected if a["region"] == worst_r][:3],
+            })
 
         high_loss = [a for a in affected if a["loss_pct"] > 10]
         if high_loss:
-            recs.append(
-                f"Review insurance coverage for {len(high_loss)} entities "
-                f"with >10% loss ratios"
-            )
+            recs.append({
+                "category": "insure",
+                "action": f"Review insurance and hedging for {len(high_loss)} high-loss entities",
+                "rationale": f"These entities lost >10% of value in the cascade",
+                "priority": "high",
+                "affected_entities": [a["entity"] for a in high_loss[:4]],
+            })
 
         dep_companies = [a for a in affected if not a.get("is_portfolio_holding")]
         if dep_companies:
-            recs.append(
-                f"Monitor {len(dep_companies)} dependency-chain companies "
-                f"(not in portfolio) that amplified cascade losses"
-            )
+            recs.append({
+                "category": "monitor",
+                "action": f"Add {len(dep_companies)} dependency-chain companies to watchlist",
+                "rationale": "These companies amplified cascade losses through supply chain and infrastructure dependencies",
+                "priority": "medium",
+                "affected_entities": [a["entity"] for a in dep_companies[:4]],
+            })
 
-        recs.append(
-            "Establish supply chain redundancy for critical dependencies "
-            "identified in cascade analysis"
-        )
+        recs.append({
+            "category": "hedge",
+            "action": "Establish supply chain redundancy and catastrophe hedges for critical dependencies",
+            "rationale": "Cascade analysis revealed concentrated dependency risks that amplified direct losses",
+            "priority": "medium",
+            "affected_entities": [],
+        })
+
         return recs

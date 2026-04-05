@@ -540,7 +540,18 @@ export function CascadeSimulationPanel({ portfolioId, className }: Props) {
                         <span className="shrink-0 w-7 h-7 rounded-lg bg-gradient-to-br from-cyan-500/20 to-teal-500/20 border border-cyan-500/30 text-cyan-400 flex items-center justify-center text-xs font-bold">
                           {i + 1}
                         </span>
-                        <span className="text-sm text-slate-300">{r}</span>
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-xs font-semibold text-cyan-400 uppercase tracking-wide">{r.category}</span>
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                              r.priority === 'high' ? 'bg-red-500/20 text-red-300' :
+                              r.priority === 'medium' ? 'bg-amber-500/20 text-amber-300' :
+                              'bg-emerald-500/20 text-emerald-300'
+                            }`}>{r.priority}</span>
+                          </div>
+                          <p className="text-sm text-slate-200 font-medium">{r.action}</p>
+                          <p className="text-xs text-slate-400 mt-0.5">{r.rationale}</p>
+                        </div>
                       </motion.div>
                     ))}
                   </motion.div>

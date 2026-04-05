@@ -98,20 +98,59 @@ def parse_event(description: str) -> dict:
     event_type = "compound"
     type_keywords = {
         "hurricane": ["hurricane", "cyclone", "tropical storm", "typhoon"],
-        "wildfire": ["wildfire", "fire", "blaze", "burn"],
-        "flood": ["flood", "flooding", "storm surge", "deluge"],
-        "drought": ["drought", "dry", "water shortage", "arid"],
-        "heatwave": ["heatwave", "heat wave", "extreme heat", "heat dome"],
+        "wildfire": ["wildfire", "fire", "blaze", "burn", "bushfire"],
+        "flood": ["flood", "flooding", "storm surge", "deluge", "tsunami", "inundation"],
+        "drought": ["drought", "draught", "dry", "water shortage", "arid", "no water",
+                     "water crisis", "desertification", "famine"],
+        "heatwave": ["heatwave", "heat wave", "extreme heat", "heat dome", "scorching"],
         "carbon_tax": ["carbon tax", "carbon price", "carbon levy"],
         "emissions_regulation": ["emission", "regulation", "epa", "clean air"],
         "supply_shock": ["silicon", "chip", "semiconductor", "shortage", "supply chain",
-                         "rare earth", "lithium", "cobalt", "disappear"],
+                         "rare earth", "lithium", "cobalt", "disappear", "stolen",
+                         "vanish", "embargo", "sanction", "blockade"],
+        "earthquake": ["earthquake", "seismic", "tremor", "quake"],
+        "pandemic": ["pandemic", "epidemic", "virus", "outbreak", "disease"],
     }
     for etype, keywords in type_keywords.items():
         if any(kw in desc_lower for kw in keywords):
             event_type = etype
             break
 
+    # --- Region detection: US states + international ---
+    regions_found = []
+
+    # International regions and countries
+    international_regions = {
+        # India
+        "india": ["India"], "rajasthan": ["Rajasthan", "India"],
+        "west india": ["Maharashtra", "Gujarat", "India"],
+        "mumbai": ["Maharashtra", "India"], "delhi": ["Delhi", "India"],
+        "chennai": ["Tamil Nadu", "India"], "bangalore": ["Karnataka", "India"],
+        "kolkata": ["West Bengal", "India"], "hyderabad": ["Telangana", "India"],
+        # China
+        "china": ["China"], "beijing": ["Beijing", "China"],
+        "shanghai": ["Shanghai", "China"], "shenzhen": ["Guangdong", "China"],
+        # Europe
+        "europe": ["Europe"], "uk": ["United Kingdom"], "london": ["United Kingdom"],
+        "germany": ["Germany"], "france": ["France"], "paris": ["France"],
+        "spain": ["Spain"], "italy": ["Italy"],
+        # Americas
+        "brazil": ["Brazil"], "mexico": ["Mexico"], "canada": ["Canada"],
+        # Asia Pacific
+        "japan": ["Japan"], "tokyo": ["Japan"], "south korea": ["South Korea"],
+        "australia": ["Australia"], "indonesia": ["Indonesia"],
+        # Middle East / Africa
+        "middle east": ["Middle East"], "saudi": ["Saudi Arabia"],
+        "nigeria": ["Nigeria"], "south africa": ["South Africa"],
+        "egypt": ["Egypt"],
+        # Generic
+        "global": ["Global"], "worldwide": ["Global"], "everywhere": ["Global"],
+    }
+    for alias, regions in international_regions.items():
+        if alias in desc_lower:
+            regions_found.extend(regions)
+
+    # US states
     us_states = [
         "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado",
         "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho",
@@ -124,11 +163,11 @@ def parse_event(description: str) -> dict:
         "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington",
         "West Virginia", "Wisconsin", "Wyoming",
     ]
-    regions_found = []
     for state in us_states:
         if state.lower() in desc_lower:
             regions_found.append(state)
 
+    # US region aliases
     region_aliases = {
         "gulf coast": ["Texas", "Louisiana", "Florida"],
         "east coast": ["New York", "New Jersey", "Virginia", "North Carolina"],
@@ -138,10 +177,8 @@ def parse_event(description: str) -> dict:
         "southwest": ["Arizona", "New Mexico", "Nevada"],
         "pacific northwest": ["Oregon", "Washington"],
         "new england": ["Massachusetts", "Connecticut", "Maine"],
-        "houston": ["Texas"],
-        "miami": ["Florida"],
-        "los angeles": ["California"],
-        "new york city": ["New York"],
+        "houston": ["Texas"], "miami": ["Florida"],
+        "los angeles": ["California"], "new york city": ["New York"],
         "chicago": ["Illinois"],
     }
     for alias, states in region_aliases.items():
@@ -150,7 +187,7 @@ def parse_event(description: str) -> dict:
 
     regions_found = list(set(regions_found))
     if not regions_found:
-        regions_found = ["USA"]
+        regions_found = ["Global"]
 
     return {
         "event_type": event_type,

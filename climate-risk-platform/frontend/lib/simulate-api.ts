@@ -32,6 +32,14 @@ export interface AffectedEntity {
   company_type?: string
 }
 
+export interface Recommendation {
+  category: string
+  action: string
+  rationale: string
+  priority: string
+  affected_entities: string[]
+}
+
 export interface SimulationResult {
   scenario: string
   event_type: string
@@ -46,7 +54,7 @@ export interface SimulationResult {
   cascade_events: CascadeEvent[]
   affected_entities: AffectedEntity[]
   dependency_chains: string[][]
-  recommendations: string[]
+  recommendations: Recommendation[]
 }
 
 export const simulateApi = {
