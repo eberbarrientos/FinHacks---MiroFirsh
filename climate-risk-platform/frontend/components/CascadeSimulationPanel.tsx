@@ -16,7 +16,6 @@ import { useState, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { simulateApi, type SimulationResult, type CascadeEvent } from '@/lib/simulate-api'
 import { AgentNetworkGraph, type AgentNode, type CascadeEdge } from './AgentNetworkGraph'
-import { SectionScroll } from './ui/section-scroll-animation'
 import { AgentCascadeTimeline, type TimelineEvent } from './AgentCascadeTimeline'
 
 interface Props {
@@ -407,33 +406,41 @@ export function CascadeSimulationPanel({ portfolioId, className }: Props) {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
+                    transition={{ duration: 0.3 }}
                   >
-                    <SectionScroll
-                      mode="inview"
-                      titleComponent={
-                        <div className="mb-4">
-                          <p className="text-sm font-medium text-cyan-400 uppercase tracking-widest mb-2">
-                            Cascade Dependency Map
-                          </p>
-                          <h2 className="text-3xl md:text-5xl font-bold text-white leading-tight">
-                            {agentNodes.length} Agents ·{' '}
-                            <span className="text-cyan-400">{cascadeEdges.length} Links</span>
-                          </h2>
-                          <p className="text-slate-400 text-sm mt-2">
-                            Scroll to explore the full network
-                          </p>
-                        </div>
-                      }
+                    {/* Title animates in first */}
+                    <motion.div
+                      initial={{ opacity: 0, y: 40 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+                      className="text-center mb-6"
                     >
-                      <div className="w-full h-[56rem] rounded-2xl overflow-hidden border border-white/10">
-                        <AgentNetworkGraph
-                          agents={agentNodes}
-                          edges={cascadeEdges}
-                          onAgentSelect={setSelectedAgent}
-                          className="h-full"
-                        />
-                      </div>
-                    </SectionScroll>
+                      <p className="text-sm font-medium text-cyan-400 uppercase tracking-widest mb-2">
+                        Cascade Dependency Map
+                      </p>
+                      <h2 className="text-3xl md:text-5xl font-bold text-white leading-tight">
+                        {agentNodes.length} Agents ·{' '}
+                        <span className="text-cyan-400">{cascadeEdges.length} Links</span>
+                      </h2>
+                      <p className="text-slate-400 text-sm mt-2">
+                        Scroll to explore the full network
+                      </p>
+                    </motion.div>
+
+                    {/* Graph animates in behind the title */}
+                    <motion.div
+                      initial={{ opacity: 0, y: 50, scale: 0.97 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      transition={{ duration: 0.7, delay: 0.18, ease: [0.22, 1, 0.36, 1] }}
+                      className="w-full h-[56rem] rounded-2xl overflow-hidden border border-white/10"
+                    >
+                      <AgentNetworkGraph
+                        agents={agentNodes}
+                        edges={cascadeEdges}
+                        onAgentSelect={setSelectedAgent}
+                        className="h-full"
+                      />
+                    </motion.div>
                   </motion.div>
                 )}
 
