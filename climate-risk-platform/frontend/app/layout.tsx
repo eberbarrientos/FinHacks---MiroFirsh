@@ -1,6 +1,7 @@
 import type { Metadata } from "next"
 import { Inter } from "next/font/google"
 import "./globals.css"
+import { AetherParticleBackground } from "@/components/ui/aether-flow-hero"
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -16,7 +17,14 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
-      <body className={inter.className}>{children}</body>
+      <body className={inter.className}>
+        {/* Fixed particle canvas — renders behind all page content, no scroll breaks */}
+        <AetherParticleBackground />
+        {/* Page content sits above the canvas */}
+        <div className="relative" style={{ zIndex: 1 }}>
+          {children}
+        </div>
+      </body>
     </html>
   )
 }

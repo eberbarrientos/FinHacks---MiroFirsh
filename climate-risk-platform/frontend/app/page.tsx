@@ -2,7 +2,7 @@
 
 import { useRef, useEffect, useState, useCallback } from 'react'
 import { motion } from 'framer-motion'
-import Hero from '@/components/ui/animated-shader-hero'
+import AetherFlowHero from '@/components/ui/aether-flow-hero'
 import { SectionScroll } from '@/components/ui/section-scroll-animation'
 import { CascadeSimulationPanel } from '@/components/CascadeSimulationPanel'
 import { portfolioApi } from '@/lib/portfolio-api'
@@ -50,27 +50,16 @@ export default function Home() {
 
   return (
     <div className="min-h-screen relative" style={{ zIndex: 1 }}>
-      {/* ===== SECTION 1: Shader Hero ===== */}
-      <Hero
-        trustBadge={{
-          text: 'MiroFish-powered Agent Cascade Simulation',
-          icons: ['⚡'],
-        }}
-        headline={{
-          line1: 'Climate Risk',
-          line2: 'Intelligence',
-        }}
+      {/* ===== SECTION 1: Aether Flow Hero ===== */}
+      <AetherFlowHero
+        trustBadge={{ text: 'MiroFish-powered Agent Cascade Simulation' }}
+        headline={{ line1: 'Climate Risk', line2: 'Intelligence' }}
         subtitle="Assess and visualize how climate events cascade through your portfolio's company network — powered by AI agents that model systemic financial risk in real time."
         buttons={{
-          primary: {
-            text: 'Launch Dashboard',
-            onClick: scrollToDashboard,
-          },
+          primary: { text: 'Launch Dashboard', onClick: scrollToDashboard },
           secondary: {
             text: 'Learn More',
-            onClick: () => {
-              document.getElementById('features')?.scrollIntoView({ behavior: 'smooth' })
-            },
+            onClick: () => document.getElementById('features')?.scrollIntoView({ behavior: 'smooth' }),
           },
         }}
       />
@@ -78,7 +67,7 @@ export default function Home() {
       {/* ===== SECTION 2: Features ===== */}
       <section
         id="features"
-        className="relative py-24 px-6"
+        className="relative py-24 px-6 bg-transparent"
       >
         <div className="max-w-6xl mx-auto">
           <SectionScroll
