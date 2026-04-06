@@ -17,6 +17,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { simulateApi, type SimulationResult, type CascadeEvent } from '@/lib/simulate-api'
 import { AgentNetworkGraph, type AgentNode, type CascadeEdge } from './AgentNetworkGraph'
 import { AgentCascadeTimeline, type TimelineEvent } from './AgentCascadeTimeline'
+import { ContainerScroll } from '@/components/ui/container-scroll-animation'
 
 interface Props {
   portfolioId: string
@@ -81,35 +82,69 @@ export function CascadeSimulationPanel({ portfolioId, className }: Props) {
   const { agentNodes, cascadeEdges, timelineEvents } = useMemo(() => {
     if (!result) return { agentNodes: [], cascadeEdges: [], timelineEvents: [] }
 
-    // Build agent nodes from affected entities
+    // Build a lookup from affected_entities for rich data
+    const entityDataMap = new Map(result.affected_entities.map(e => [e.entity, e]))
+
+    // Collect ALL unique company names that appear in cascade events (source or target)
+    const allNames = new Set<string>()
+    result.affected_entities.forEach(e => allNames.add(e.entity))
+    result.cascade_events.forEach(e => {
+      if (e.source !== 'Climate Event') allNames.add(e.source)
+      if (e.target !== 'Climate Event') allNames.add(e.target)
+    })
+
+    // Build agent nodes — use affected_entity data when available, infer otherwise
     const agentMap = new Map<string, AgentNode>()
-    
-    result.affected_entities.forEach(entity => {
-      // Find the earliest round this entity was affected
+
+    allNames.forEach(name => {
+      const entity = entityDataMap.get(name)
+      // Find the earliest round this entity was involved
       const entityEvents = result.cascade_events.filter(
-        e => e.target === entity.entity || e.source === entity.entity
+        e => e.target === name || e.source === name
       )
-      const minRound = entityEvents.length > 0 
+      const minRound = entityEvents.length > 0
         ? Math.min(...entityEvents.map(e => e.round))
         : 0
 
-      agentMap.set(entity.entity, {
-        id: entity.entity,
-        name: entity.entity,
-        sector: entity.sector,
-        region: entity.region,
-        marketValue: entity.market_value,
-        riskScore: Math.min(entity.loss_pct * 10, 100),
-        loss: entity.total_loss,
-        lossPct: entity.loss_pct,
-        dependencies: [],
-        isDirectlyAffected: minRound === 0,
-        cascadeRound: minRound,
-        isPortfolioHolding: (entity as any).is_portfolio_holding ?? true,
-      })
+      if (entity) {
+        agentMap.set(name, {
+          id: name,
+          name,
+          sector: entity.sector,
+          region: entity.region,
+          marketValue: entity.market_value,
+          riskScore: Math.min(entity.loss_pct * 10, 100),
+          loss: entity.total_loss,
+          lossPct: entity.loss_pct,
+          dependencies: [],
+          isDirectlyAffected: minRound === 0,
+          cascadeRound: minRound,
+          isPortfolioHolding: entity.is_portfolio_holding ?? true,
+        })
+      } else {
+        // Source-only node: infer sector from cascade event types
+        const outEvents = result.cascade_events.filter(e => e.source === name)
+        const inferredSector = outEvents[0]?.type?.includes('grid') ? 'Utilities'
+          : outEvents[0]?.type?.includes('insur') ? 'Financials'
+          : 'Energy'
+        agentMap.set(name, {
+          id: name,
+          name,
+          sector: inferredSector,
+          region: 'Unknown',
+          marketValue: 0,
+          riskScore: 0,
+          loss: 0,
+          lossPct: 0,
+          dependencies: [],
+          isDirectlyAffected: minRound === 0,
+          cascadeRound: minRound,
+          isPortfolioHolding: false,
+        })
+      }
     })
 
-    // Build edges from cascade events
+    // Build edges — now all sources and targets exist in agentMap
     const edges: CascadeEdge[] = result.cascade_events
       .filter(e => e.source !== 'Climate Event' && agentMap.has(e.source) && agentMap.has(e.target))
       .map(e => ({
@@ -146,6 +181,22 @@ export function CascadeSimulationPanel({ portfolioId, className }: Props) {
   }
 
   return (
+    <ContainerScroll
+      titleComponent={
+        <div className="mb-4">
+          <p className="text-sm font-medium text-cyan-400 uppercase tracking-widest mb-2">
+            Climate Risk Intelligence
+          </p>
+          <h1 className="text-4xl md:text-6xl font-bold text-white leading-tight">
+            Agent Cascade{' '}
+            <span className="text-cyan-400">Simulation</span>
+          </h1>
+          <p className="text-slate-400 text-base mt-3 max-w-xl mx-auto">
+            Describe a climate event and watch how it cascades through your portfolio's company network
+          </p>
+        </div>
+      }
+    >
     <div className={`space-y-4 ${className || ''}`}>
       {/* Input Section */}
       <motion.div
@@ -562,5 +613,6 @@ export function CascadeSimulationPanel({ portfolioId, className }: Props) {
         </motion.div>
       )}
     </div>
+    </ContainerScroll>
   )
 }

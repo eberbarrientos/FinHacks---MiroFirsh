@@ -10,39 +10,37 @@ export const ContainerScroll = ({
   children: React.ReactNode;
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Animate as the container scrolls into view (start end → end end)
   const { scrollYProgress } = useScroll({
     target: containerRef,
+    offset: ["start end", "end end"],
   });
+
   const [isMobile, setIsMobile] = React.useState(false);
 
   React.useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth <= 768);
-    };
+    const checkMobile = () => setIsMobile(window.innerWidth <= 768);
     checkMobile();
     window.addEventListener("resize", checkMobile);
-    return () => {
-      window.removeEventListener("resize", checkMobile);
-    };
+    return () => window.removeEventListener("resize", checkMobile);
   }, []);
 
-  const scaleDimensions = () => {
-    return isMobile ? [0.7, 0.9] : [1.05, 1];
-  };
-
-  const rotate = useTransform(scrollYProgress, [0, 1], [20, 0]);
-  const scale = useTransform(scrollYProgress, [0, 1], scaleDimensions());
-  const translate = useTransform(scrollYProgress, [0, 1], [0, -100]);
+  // Tilted when entering, flat when fully in view
+  const rotate = useTransform(scrollYProgress, [0, 0.65], [18, 0]);
+  const scale = useTransform(
+    scrollYProgress,
+    [0, 0.65],
+    isMobile ? [0.82, 1] : [0.88, 1]
+  );
+  const translate = useTransform(scrollYProgress, [0, 0.65], [0, -50]);
 
   return (
     <div
-      className="h-[70rem] md:h-[100rem] flex items-center justify-center relative p-2 md:p-20"
       ref={containerRef}
+      className="min-h-[120vh] flex flex-col items-center justify-start relative pt-16 pb-10 px-4 md:px-8"
     >
-      <div
-        className="py-10 md:py-40 w-full relative"
-        style={{ perspective: "1000px" }}
-      >
+      <div className="w-full relative" style={{ perspective: "1200px" }}>
         <Header translate={translate} titleComponent={titleComponent} />
         <Card rotate={rotate} translate={translate} scale={scale}>
           {children}
@@ -56,7 +54,7 @@ export const Header = ({ translate, titleComponent }: any) => {
   return (
     <motion.div
       style={{ translateY: translate }}
-      className="div max-w-5xl mx-auto text-center"
+      className="w-full mx-auto text-center mb-8"
     >
       {titleComponent}
     </motion.div>
@@ -78,12 +76,13 @@ export const Card = ({
       style={{
         rotateX: rotate,
         scale,
+        transformOrigin: "top center",
         boxShadow:
           "0 0 #0000004d, 0 9px 20px #0000004a, 0 37px 37px #00000042, 0 84px 50px #00000026, 0 149px 60px #0000000a, 0 233px 65px #00000003",
       }}
-      className="max-w-6xl -mt-12 mx-auto h-[40rem] md:h-[56rem] w-full border-4 border-[#1e293b] p-2 md:p-4 bg-[#020617] rounded-[30px] shadow-2xl"
+      className="w-full min-h-[80vh] border-4 border-[#6C6C6C] p-2 md:p-5 bg-[#222222] rounded-[30px] shadow-2xl"
     >
-      <div className="h-full w-full overflow-hidden rounded-2xl bg-slate-900/80 dark:bg-slate-900 md:rounded-2xl">
+      <div className="h-full w-full min-h-[calc(80vh-2.5rem)] overflow-hidden rounded-2xl bg-zinc-900 md:rounded-2xl md:p-4">
         {children}
       </div>
     </motion.div>
